@@ -27,4 +27,7 @@ add_custom_command(TARGET d3d9 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/presets/ReShadePreset.ini"
         "$<TARGET_FILE_DIR:d3d9>/presets/ReShadePreset.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/presets/DerethFX_Dream.ini"
+        "$<TARGET_FILE_DIR:d3d9>/presets/DerethFX_Dream.ini"
 )

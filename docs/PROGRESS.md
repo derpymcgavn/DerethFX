@@ -61,3 +61,10 @@ The config system is now in place. `derethfx.ini` covers effect toggles, texture
 - Added an atmospheric ReShade preset using stable SweetFX effects: LiftGammaGain, Tonemap, FakeHDR, Technicolor2, Deband, Curves, Sepia, Vignette, and CAS.
 - Kept DerethFX defaults conservative: texture detail and render distance on; water, dynamic lighting, metal sheen, surface detail, fog override, and shadow-plane suppression off.
 - The active preset adds sky/cloud contrast and smoother gradients without the rectangle artifacts seen from broader bloom/DPX experiments.
+
+# 2026-10-09 - Atmospheric Preset Pass
+
+- Reworked the default ReShade preset to use only the installed SweetFX/ReShade effects that compiled cleanly in the AC folder.
+- Added `Vibrance` and subtle `FilmGrain` to give clouds, sky gradients, and fog a little more life without making UI text crunchy.
+- Tuned the pseudo-bloom/local-contrast pass through `FakeHDR` instead of unavailable bloom shaders, avoiding the invalid-technique issue from earlier ReShade tests.
+- Added `presets/DerethFX_Dream.ini` as a stronger screenshot-oriented look for continued tuning.

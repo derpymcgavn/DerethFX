@@ -60,14 +60,16 @@ Press `F9` in-game to open the DerethFX config panel. `Save + Reload` writes `de
 - `LiftGammaGain`
 - `Tonemap`
 - `FakeHDR` as a stable pseudo-bloom/local contrast pass
+- `Vibrance`
 - `Technicolor2`
 - `Deband` for smoother sky/cloud gradients
 - `Curves`
 - `Sepia`
 - `Vignette`
+- `FilmGrain` at very low strength to give skies and fog a little texture
 - `CAS`
 
-The goal is a warmer, more immersive night/storm look with more life in the sky texture while keeping UI text readable.
+The goal is a warmer, more immersive night/storm look with more life in the sky texture while keeping UI text readable. `presets/DerethFX_Dream.ini` is a bolder variant with stronger sunset warmth, more bloom-like glow, and a touch more grain for testing screenshots.
 
 ## Build
 
