@@ -4,31 +4,198 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <cmath>
 
 namespace
 {
     HMODULE g_realD3D9 = nullptr;
+    HINSTANCE g_instance = nullptr;
     char g_logPath[MAX_PATH] = {};
+    char g_configPath[MAX_PATH] = {};
 
-    void InitLogPath()
+    enum class LogLevel
     {
-        if (g_logPath[0] != '\0')
+        Quiet = 0,
+        Normal = 1,
+        Debug = 2
+    };
+
+    struct Config
+    {
+        LogLevel logging = LogLevel::Normal;
+        bool textureDetail = true;
+        bool waterReflection = true;
+        bool dynamicLighting = true;
+        bool metalSheen = true;
+        bool surfaceDetail = true;
+        bool volumetricFog = false;
+        bool extendRenderDistance = true;
+        bool protectAlphaLights = true;
+        bool softAlphaFix = true;
+        bool suppressShadowPlanes = true;
+        bool frameSummaries = false;
+        bool drawSampling = false;
+        bool waterDiagnostics = false;
+        bool chainLoadD3D9 = false;
+        char chainD3D9Path[MAX_PATH] = "reshade_d3d9.dll";
+        UINT shadowMaxPrimitiveCount = 2;
+        UINT detailMinPrimitiveCount = 4;
+        DWORD detailAnisotropy = 16;
+        float detailMipBias = -0.85f;
+        UINT waterMinPrimitiveCount = 80;
+        UINT waterMaxPrimitiveCount = 220;
+        float waterStrength = 0.55f;
+        float surfaceDetailStrength = 0.35f;
+        UINT lightMinPrimitiveCount = 4;
+        UINT lightMaxPrimitiveCount = 96;
+        UINT metalMinPrimitiveCount = 4;
+        UINT metalMaxPrimitiveCount = 48;
+        float metalSpecular = 0.62f;
+        float metalSpecularBlue = 0.70f;
+        float metalPower = 72.0f;
+        BYTE ambientR = 42;
+        BYTE ambientG = 42;
+        BYTE ambientB = 50;
+        float materialSpecular = 0.38f;
+        float materialSpecularBlue = 0.44f;
+        float materialPower = 12.0f;
+        float diffuseStrength = 0.90f;
+        float specularStrength = 0.90f;
+        float lightFlickerStrength = 0.08f;
+        float lightMotionStrength = 0.10f;
+        DWORD softAlphaRef = 10;
+        float fogStartScale = 1.05f;
+        float fogEndScale = 1.25f;
+        float fogDensityScale = 0.15f;
+        float minFogEnd = 40000.0f;
+        float farPlane = 500000.0f;
+    };
+
+    Config g_config;
+    bool g_configLoaded = false;
+    void InitPaths()
+    {
+        if (g_logPath[0] != '\0' && g_configPath[0] != '\0')
             return;
 
-        GetModuleFileNameA(nullptr, g_logPath, MAX_PATH);
-        char* slash = strrchr(g_logPath, '\\');
+        char basePath[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, basePath, MAX_PATH);
+        char* slash = strrchr(basePath, '\\');
         if (slash != nullptr)
             *(slash + 1) = '\0';
         else
-            g_logPath[0] = '\0';
+            basePath[0] = '\0';
 
+        strcpy_s(g_logPath, basePath);
         strncat_s(g_logPath, "ac_d3d9_proxy.log", _TRUNCATE);
+        strcpy_s(g_configPath, basePath);
+        strncat_s(g_configPath, "derethfx.ini", _TRUNCATE);
     }
 
-    void Log(const char* fmt, ...)
+    bool ReadBool(const char* section, const char* key, bool fallback)
     {
-        InitLogPath();
+        return GetPrivateProfileIntA(section, key, fallback ? 1 : 0, g_configPath) != 0;
+    }
 
+    UINT ReadUInt(const char* section, const char* key, UINT fallback, UINT minValue, UINT maxValue)
+    {
+        UINT value = static_cast<UINT>(GetPrivateProfileIntA(section, key, static_cast<int>(fallback), g_configPath));
+        if (value < minValue)
+            value = minValue;
+        if (value > maxValue)
+            value = maxValue;
+        return value;
+    }
+
+    float ReadFloat(const char* section, const char* key, float fallback, float minValue, float maxValue)
+    {
+        char text[64] = {};
+        char fallbackText[64] = {};
+        std::snprintf(fallbackText, sizeof(fallbackText), "%.3f", fallback);
+        GetPrivateProfileStringA(section, key, fallbackText, text, sizeof(text), g_configPath);
+        float value = static_cast<float>(std::atof(text));
+        if (value < minValue)
+            value = minValue;
+        if (value > maxValue)
+            value = maxValue;
+        return value;
+    }
+
+    void LoadConfig()
+    {
+        if (g_configLoaded)
+            return;
+
+        InitPaths();
+
+        char level[32] = {};
+        GetPrivateProfileStringA("Logging", "level", "normal", level, sizeof(level), g_configPath);
+        if (_stricmp(level, "quiet") == 0 || _stricmp(level, "off") == 0)
+            g_config.logging = LogLevel::Quiet;
+        else if (_stricmp(level, "debug") == 0)
+            g_config.logging = LogLevel::Debug;
+        else
+            g_config.logging = LogLevel::Normal;
+
+        g_config.textureDetail = ReadBool("Effects", "textureDetail", g_config.textureDetail);
+        g_config.waterReflection = ReadBool("Effects", "waterReflection", g_config.waterReflection);
+        g_config.dynamicLighting = ReadBool("Effects", "dynamicLighting", g_config.dynamicLighting);
+        g_config.metalSheen = ReadBool("Effects", "metalSheen", g_config.metalSheen);
+        g_config.surfaceDetail = ReadBool("Effects", "surfaceDetail", g_config.surfaceDetail);
+        g_config.volumetricFog = ReadBool("Effects", "volumetricFog", g_config.volumetricFog);
+        g_config.extendRenderDistance = ReadBool("Effects", "extendRenderDistance", g_config.extendRenderDistance);
+        g_config.protectAlphaLights = ReadBool("Effects", "protectAlphaLights", g_config.protectAlphaLights);
+        g_config.softAlphaFix = ReadBool("Effects", "softAlphaFix", g_config.softAlphaFix);
+        g_config.suppressShadowPlanes = ReadBool("Effects", "suppressShadowPlanes", g_config.suppressShadowPlanes);
+
+        g_config.frameSummaries = ReadBool("Logging", "frameSummaries", g_config.logging == LogLevel::Debug);
+        g_config.drawSampling = ReadBool("Logging", "drawSampling", g_config.logging == LogLevel::Debug);
+        g_config.waterDiagnostics = ReadBool("Logging", "waterDiagnostics", g_config.logging == LogLevel::Debug);
+        g_config.chainLoadD3D9 = ReadBool("ReShade", "chainLoad", g_config.chainLoadD3D9);
+        GetPrivateProfileStringA("ReShade", "dll", g_config.chainD3D9Path, g_config.chainD3D9Path, sizeof(g_config.chainD3D9Path), g_configPath);
+        g_config.shadowMaxPrimitiveCount = ReadUInt("Shadows", "maxPrimitiveCount", g_config.shadowMaxPrimitiveCount, 1, 64);
+
+        g_config.detailMinPrimitiveCount = ReadUInt("TextureDetail", "minPrimitiveCount", g_config.detailMinPrimitiveCount, 1, 10000);
+        g_config.detailAnisotropy = ReadUInt("TextureDetail", "anisotropy", g_config.detailAnisotropy, 1, 16);
+        g_config.detailMipBias = ReadFloat("TextureDetail", "mipBias", g_config.detailMipBias, -3.0f, 1.0f);
+
+        g_config.waterMinPrimitiveCount = ReadUInt("Water", "minPrimitiveCount", g_config.waterMinPrimitiveCount, 1, 10000);
+        g_config.waterMaxPrimitiveCount = ReadUInt("Water", "maxPrimitiveCount", g_config.waterMaxPrimitiveCount, g_config.waterMinPrimitiveCount, 10000);
+        g_config.waterStrength = ReadFloat("Water", "strength", g_config.waterStrength, 0.0f, 2.0f);
+        g_config.surfaceDetailStrength = ReadFloat("SurfaceDetail", "strength", g_config.surfaceDetailStrength, 0.0f, 1.0f);
+
+        g_config.lightMinPrimitiveCount = ReadUInt("DynamicLighting", "minPrimitiveCount", g_config.lightMinPrimitiveCount, 1, 10000);
+        g_config.lightMaxPrimitiveCount = ReadUInt("DynamicLighting", "maxPrimitiveCount", g_config.lightMaxPrimitiveCount, g_config.lightMinPrimitiveCount, 10000);
+        g_config.ambientR = static_cast<BYTE>(ReadUInt("DynamicLighting", "ambientR", g_config.ambientR, 0, 255));
+        g_config.ambientG = static_cast<BYTE>(ReadUInt("DynamicLighting", "ambientG", g_config.ambientG, 0, 255));
+        g_config.ambientB = static_cast<BYTE>(ReadUInt("DynamicLighting", "ambientB", g_config.ambientB, 0, 255));
+        g_config.materialSpecular = ReadFloat("DynamicLighting", "materialSpecular", g_config.materialSpecular, 0.0f, 1.0f);
+        g_config.materialSpecularBlue = ReadFloat("DynamicLighting", "materialSpecularBlue", g_config.materialSpecularBlue, 0.0f, 1.0f);
+        g_config.materialPower = ReadFloat("DynamicLighting", "materialPower", g_config.materialPower, 1.0f, 128.0f);
+        g_config.diffuseStrength = ReadFloat("DynamicLighting", "diffuseStrength", g_config.diffuseStrength, 0.0f, 2.0f);
+        g_config.specularStrength = ReadFloat("DynamicLighting", "specularStrength", g_config.specularStrength, 0.0f, 2.0f);
+        g_config.lightFlickerStrength = ReadFloat("DynamicLighting", "lightFlickerStrength", g_config.lightFlickerStrength, 0.0f, 0.35f);
+        g_config.lightMotionStrength = ReadFloat("DynamicLighting", "lightMotionStrength", g_config.lightMotionStrength, 0.0f, 0.50f);
+
+        g_config.metalMinPrimitiveCount = ReadUInt("Metal", "minPrimitiveCount", g_config.metalMinPrimitiveCount, 1, 10000);
+        g_config.metalMaxPrimitiveCount = ReadUInt("Metal", "maxPrimitiveCount", g_config.metalMaxPrimitiveCount, g_config.metalMinPrimitiveCount, 10000);
+        g_config.metalSpecular = ReadFloat("Metal", "specular", g_config.metalSpecular, 0.0f, 1.0f);
+        g_config.metalSpecularBlue = ReadFloat("Metal", "specularBlue", g_config.metalSpecularBlue, 0.0f, 1.0f);
+        g_config.metalPower = ReadFloat("Metal", "power", g_config.metalPower, 1.0f, 128.0f);
+        g_config.softAlphaRef = ReadUInt("Alpha", "softAlphaRef", g_config.softAlphaRef, 0, 255);
+
+        g_config.fogStartScale = ReadFloat("Atmosphere", "fogStartScale", g_config.fogStartScale, 0.1f, 10.0f);
+        g_config.fogEndScale = ReadFloat("Atmosphere", "fogEndScale", g_config.fogEndScale, 0.1f, 20.0f);
+        g_config.fogDensityScale = ReadFloat("Atmosphere", "fogDensityScale", g_config.fogDensityScale, 0.05f, 5.0f);
+        g_config.minFogEnd = ReadFloat("Atmosphere", "minFogEnd", g_config.minFogEnd, 1000.0f, 1000000.0f);
+        g_config.farPlane = ReadFloat("RenderDistance", "farPlane", g_config.farPlane, 1000.0f, 2000000.0f);
+
+        g_configLoaded = true;
+    }
+
+    void WriteLogLine(const char* fmt, va_list args)
+    {
         FILE* file = nullptr;
         if (fopen_s(&file, g_logPath, "a") != 0 || file == nullptr)
             return;
@@ -37,20 +204,77 @@ namespace
         GetLocalTime(&st);
         std::fprintf(file, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] ",
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-
-        va_list args;
-        va_start(args, fmt);
         std::vfprintf(file, fmt, args);
-        va_end(args);
-
         std::fprintf(file, "\n");
         std::fclose(file);
     }
 
+    void Log(const char* fmt, ...)
+    {
+        LoadConfig();
+        if (g_config.logging == LogLevel::Quiet)
+            return;
+
+        va_list args;
+        va_start(args, fmt);
+        WriteLogLine(fmt, args);
+        va_end(args);
+    }
+
+    void DebugLog(const char* fmt, ...)
+    {
+        LoadConfig();
+        if (g_config.logging != LogLevel::Debug)
+            return;
+
+        va_list args;
+        va_start(args, fmt);
+        WriteLogLine(fmt, args);
+        va_end(args);
+    }
     HMODULE LoadRealD3D9()
     {
         if (g_realD3D9 != nullptr)
             return g_realD3D9;
+
+        LoadConfig();
+
+        if (g_config.chainLoadD3D9 && g_config.chainD3D9Path[0] != '\0')
+        {
+            char chainPath[MAX_PATH] = {};
+            const bool absolutePath =
+                (g_config.chainD3D9Path[0] != '\0' && g_config.chainD3D9Path[1] == ':') ||
+                (g_config.chainD3D9Path[0] == '\\' && g_config.chainD3D9Path[1] == '\\');
+
+            if (absolutePath)
+            {
+                strcpy_s(chainPath, g_config.chainD3D9Path);
+            }
+            else
+            {
+                strcpy_s(chainPath, g_configPath);
+                char* slash = strrchr(chainPath, '\\');
+                if (slash != nullptr)
+                    *(slash + 1) = '\0';
+                else
+                    chainPath[0] = '\0';
+                strncat_s(chainPath, g_config.chainD3D9Path, _TRUNCATE);
+            }
+
+            const char* fileName = strrchr(chainPath, '\\');
+            fileName = fileName != nullptr ? fileName + 1 : chainPath;
+            if (_stricmp(fileName, "d3d9.dll") == 0)
+            {
+                Log("Skipping ReShade chainload from %s to avoid loading DerethFX recursively", chainPath);
+            }
+            else
+            {
+                g_realD3D9 = LoadLibraryA(chainPath);
+                Log("LoadLibraryA(%s) [chain] -> %p", chainPath, g_realD3D9);
+                if (g_realD3D9 != nullptr)
+                    return g_realD3D9;
+            }
+        }
 
         char path[MAX_PATH] = {};
         GetSystemDirectoryA(path, MAX_PATH);
@@ -112,7 +336,16 @@ namespace
     unsigned g_waterCandidateLogs = 0;
     bool g_waterReflectionLogged = false;
     IDirect3DTexture9* g_reflectionTexture = nullptr;
+    IDirect3DTexture9* g_surfaceDetailTexture = nullptr;
+    IDirect3DDevice9* g_lastDevice = nullptr;
+    D3DMATRIX g_lastProjection {};
+    bool g_hasLastProjection = false;
     bool g_dynamicLightingLogged = false;
+    bool g_metalSheenLogged = false;
+    bool g_fogLogged = false;
+    bool g_farPlaneLogged = false;
+    bool g_shadowPlaneLogged = false;
+    bool g_surfaceDetailLogged = false;
 
     using ResetFn = HRESULT (WINAPI*)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
     using PresentFn = HRESULT (WINAPI*)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
@@ -140,6 +373,7 @@ namespace
     EndSceneFn g_origEndScene = nullptr;
     ClearFn g_origClear = nullptr;
     SetRenderStateFn g_origSetRenderState = nullptr;
+    using SetTransformFn = HRESULT (WINAPI*)(IDirect3DDevice9*, D3DTRANSFORMSTATETYPE, const D3DMATRIX*);
     SetTextureFn g_origSetTexture = nullptr;
     DrawPrimitiveFn g_origDrawPrimitive = nullptr;
     DrawIndexedPrimitiveFn g_origDrawIndexedPrimitive = nullptr;
@@ -149,7 +383,284 @@ namespace
     SetVertexShaderFn g_origSetVertexShader = nullptr;
     SetPixelShaderFn g_origSetPixelShader = nullptr;
 
-    bool LooksLikeUiDraw(UINT primitiveCount)
+    enum ConfigControlId
+    {
+        IDC_TEXTURE_DETAIL = 2001,
+        IDC_WATER_REFLECTION,
+        IDC_DYNAMIC_LIGHTING,
+        IDC_METAL_SHEEN,
+        IDC_SURFACE_DETAIL,
+        IDC_VOLUMETRIC_FOG,
+        IDC_EXTEND_DISTANCE,
+        IDC_WATER_STRENGTH,
+        IDC_MIP_BIAS,
+        IDC_SURFACE_STRENGTH,
+        IDC_METAL_SPECULAR,
+        IDC_METAL_POWER,
+        IDC_FAR_PLANE,
+        IDC_FOG_START,
+        IDC_FOG_END,
+        IDC_FOG_DENSITY,
+        IDC_SAVE_RELOAD,
+        IDC_RELOAD,
+        IDC_CLOSE
+    };
+
+    HWND g_configWindow = nullptr;
+    bool g_configWindowClassRegistered = false;
+    bool g_f9WasDown = false;
+
+    HRESULT SetConfiguredTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE state, const D3DMATRIX* matrix);
+
+    void PumpConfigWindowMessages()
+    {
+        if (g_configWindow == nullptr)
+            return;
+
+        MSG msg {};
+        while (PeekMessageA(&msg, g_configWindow, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+    }
+    void ReleaseGeneratedTextures()
+    {
+        if (g_reflectionTexture != nullptr)
+        {
+            g_reflectionTexture->Release();
+            g_reflectionTexture = nullptr;
+        }
+
+        if (g_surfaceDetailTexture != nullptr)
+        {
+            g_surfaceDetailTexture->Release();
+            g_surfaceDetailTexture = nullptr;
+        }
+    }
+
+    void ReloadConfig()
+    {
+        ReleaseGeneratedTextures();
+        g_config = Config {};
+        g_configLoaded = false;
+        g_textureDetailLogged = false;
+        g_waterReflectionLogged = false;
+        g_dynamicLightingLogged = false;
+        g_metalSheenLogged = false;
+        g_fogLogged = false;
+        g_farPlaneLogged = false;
+        g_shadowPlaneLogged = false;
+        g_surfaceDetailLogged = false;
+        LoadConfig();
+        Log("config reloaded: texture=%d water=%d lighting=%d surface=%d fog=%d distance=%d waterStrength=%.2f farPlane=%.1f path=%s",
+            g_config.textureDetail ? 1 : 0,
+            g_config.waterReflection ? 1 : 0,
+            g_config.dynamicLighting ? 1 : 0,
+            g_config.surfaceDetail ? 1 : 0,
+            g_config.volumetricFog ? 1 : 0,
+            g_config.extendRenderDistance ? 1 : 0,
+            g_config.waterStrength,
+            g_config.farPlane,
+            g_configPath);
+
+        if (g_lastDevice != nullptr && g_hasLastProjection)
+            SetConfiguredTransform(g_lastDevice, D3DTS_PROJECTION, &g_lastProjection);
+    }
+
+    void WriteIniBool(const char* section, const char* key, bool value)
+    {
+        WritePrivateProfileStringA(section, key, value ? "1" : "0", g_configPath);
+    }
+
+    void WriteIniFloat(const char* section, const char* key, float value)
+    {
+        char text[64] = {};
+        std::snprintf(text, sizeof(text), "%.3f", value);
+        WritePrivateProfileStringA(section, key, text, g_configPath);
+    }
+
+    void SetEditFloat(HWND window, int id, float value)
+    {
+        char text[64] = {};
+        std::snprintf(text, sizeof(text), "%.3f", value);
+        SetDlgItemTextA(window, id, text);
+    }
+
+    float GetEditFloat(HWND window, int id, float fallback)
+    {
+        char text[64] = {};
+        GetDlgItemTextA(window, id, text, sizeof(text));
+        if (text[0] == '\0')
+            return fallback;
+        return static_cast<float>(std::atof(text));
+    }
+
+    HWND AddControl(HWND parent, const char* cls, const char* text, DWORD style, int id, int x, int y, int w, int h)
+    {
+        return CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_instance, nullptr);
+    }
+
+    void AddLabel(HWND parent, const char* text, int x, int y)
+    {
+        AddControl(parent, "STATIC", text, 0, 0, x, y, 130, 20);
+    }
+
+    void FillConfigWindow(HWND window)
+    {
+        LoadConfig();
+        CheckDlgButton(window, IDC_TEXTURE_DETAIL, g_config.textureDetail ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_WATER_REFLECTION, g_config.waterReflection ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_DYNAMIC_LIGHTING, g_config.dynamicLighting ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_METAL_SHEEN, g_config.metalSheen ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_SURFACE_DETAIL, g_config.surfaceDetail ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_VOLUMETRIC_FOG, g_config.volumetricFog ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_EXTEND_DISTANCE, g_config.extendRenderDistance ? BST_CHECKED : BST_UNCHECKED);
+        SetEditFloat(window, IDC_WATER_STRENGTH, g_config.waterStrength);
+        SetEditFloat(window, IDC_MIP_BIAS, g_config.detailMipBias);
+        SetEditFloat(window, IDC_SURFACE_STRENGTH, g_config.surfaceDetailStrength);
+        SetEditFloat(window, IDC_METAL_SPECULAR, g_config.metalSpecular);
+        SetEditFloat(window, IDC_METAL_POWER, g_config.metalPower);
+        SetEditFloat(window, IDC_FAR_PLANE, g_config.farPlane);
+        SetEditFloat(window, IDC_FOG_START, g_config.fogStartScale);
+        SetEditFloat(window, IDC_FOG_END, g_config.fogEndScale);
+        SetEditFloat(window, IDC_FOG_DENSITY, g_config.fogDensityScale);
+    }
+
+    void SaveConfigWindow(HWND window)
+    {
+        WriteIniBool("Effects", "textureDetail", IsDlgButtonChecked(window, IDC_TEXTURE_DETAIL) == BST_CHECKED);
+        WriteIniBool("Effects", "waterReflection", IsDlgButtonChecked(window, IDC_WATER_REFLECTION) == BST_CHECKED);
+        WriteIniBool("Effects", "dynamicLighting", IsDlgButtonChecked(window, IDC_DYNAMIC_LIGHTING) == BST_CHECKED);
+        WriteIniBool("Effects", "metalSheen", IsDlgButtonChecked(window, IDC_METAL_SHEEN) == BST_CHECKED);
+        WriteIniBool("Effects", "surfaceDetail", IsDlgButtonChecked(window, IDC_SURFACE_DETAIL) == BST_CHECKED);
+        WriteIniBool("Effects", "volumetricFog", IsDlgButtonChecked(window, IDC_VOLUMETRIC_FOG) == BST_CHECKED);
+        WriteIniBool("Effects", "extendRenderDistance", IsDlgButtonChecked(window, IDC_EXTEND_DISTANCE) == BST_CHECKED);
+        WriteIniFloat("Water", "strength", GetEditFloat(window, IDC_WATER_STRENGTH, g_config.waterStrength));
+        WriteIniFloat("TextureDetail", "mipBias", GetEditFloat(window, IDC_MIP_BIAS, g_config.detailMipBias));
+        WriteIniFloat("SurfaceDetail", "strength", GetEditFloat(window, IDC_SURFACE_STRENGTH, g_config.surfaceDetailStrength));
+        WriteIniFloat("Metal", "specular", GetEditFloat(window, IDC_METAL_SPECULAR, g_config.metalSpecular));
+        WriteIniFloat("Metal", "power", GetEditFloat(window, IDC_METAL_POWER, g_config.metalPower));
+        WriteIniFloat("RenderDistance", "farPlane", GetEditFloat(window, IDC_FAR_PLANE, g_config.farPlane));
+        WriteIniFloat("Atmosphere", "fogStartScale", GetEditFloat(window, IDC_FOG_START, g_config.fogStartScale));
+        WriteIniFloat("Atmosphere", "fogEndScale", GetEditFloat(window, IDC_FOG_END, g_config.fogEndScale));
+        WriteIniFloat("Atmosphere", "fogDensityScale", GetEditFloat(window, IDC_FOG_DENSITY, g_config.fogDensityScale));
+        ReloadConfig();
+        FillConfigWindow(window);
+    }
+
+    LRESULT CALLBACK ConfigWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+    {
+        UNREFERENCED_PARAMETER(lparam);
+        switch (message)
+        {
+        case WM_CREATE:
+            AddControl(window, "BUTTON", "Texture detail", BS_AUTOCHECKBOX, IDC_TEXTURE_DETAIL, 16, 16, 150, 22);
+            AddControl(window, "BUTTON", "Water reflection", BS_AUTOCHECKBOX, IDC_WATER_REFLECTION, 16, 42, 150, 22);
+            AddControl(window, "BUTTON", "Dynamic lighting", BS_AUTOCHECKBOX, IDC_DYNAMIC_LIGHTING, 16, 68, 150, 22);
+            AddControl(window, "BUTTON", "Metal sheen", BS_AUTOCHECKBOX, IDC_METAL_SHEEN, 16, 94, 150, 22);
+            AddControl(window, "BUTTON", "Surface detail", BS_AUTOCHECKBOX, IDC_SURFACE_DETAIL, 16, 120, 150, 22);
+            AddControl(window, "BUTTON", "Fog override", BS_AUTOCHECKBOX, IDC_VOLUMETRIC_FOG, 16, 146, 150, 22);
+            AddControl(window, "BUTTON", "Extend distance", BS_AUTOCHECKBOX, IDC_EXTEND_DISTANCE, 16, 172, 150, 22);
+            AddLabel(window, "Water strength", 190, 18);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_WATER_STRENGTH, 320, 16, 80, 22);
+            AddLabel(window, "Mip bias", 190, 46);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_MIP_BIAS, 320, 44, 80, 22);
+            AddLabel(window, "Surface strength", 190, 74);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_SURFACE_STRENGTH, 320, 72, 80, 22);
+            AddLabel(window, "Metal specular", 190, 102);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_METAL_SPECULAR, 320, 100, 80, 22);
+            AddLabel(window, "Metal power", 190, 130);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_METAL_POWER, 320, 128, 80, 22);
+            AddLabel(window, "Far plane", 190, 158);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_FAR_PLANE, 320, 156, 80, 22);
+            AddLabel(window, "Fog start scale", 190, 186);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_FOG_START, 320, 184, 80, 22);
+            AddLabel(window, "Fog end scale", 190, 214);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_FOG_END, 320, 212, 80, 22);
+            AddLabel(window, "Fog density", 190, 242);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_FOG_DENSITY, 320, 240, 80, 22);
+            AddControl(window, "BUTTON", "Save + Reload", BS_PUSHBUTTON, IDC_SAVE_RELOAD, 16, 280, 120, 28);
+            AddControl(window, "BUTTON", "Reload", BS_PUSHBUTTON, IDC_RELOAD, 150, 280, 90, 28);
+            AddControl(window, "BUTTON", "Close", BS_PUSHBUTTON, IDC_CLOSE, 310, 280, 90, 28);
+            FillConfigWindow(window);
+            return 0;
+        case WM_COMMAND:
+            switch (LOWORD(wparam))
+            {
+            case IDC_SAVE_RELOAD:
+                SaveConfigWindow(window);
+                return 0;
+            case IDC_RELOAD:
+                ReloadConfig();
+                FillConfigWindow(window);
+                return 0;
+            case IDC_CLOSE:
+                ShowWindow(window, SW_HIDE);
+                return 0;
+            default:
+                break;
+            }
+            break;
+        case WM_CLOSE:
+            ShowWindow(window, SW_HIDE);
+            return 0;
+        case WM_DESTROY:
+            g_configWindow = nullptr;
+            return 0;
+        default:
+            break;
+        }
+        return DefWindowProcA(window, message, wparam, lparam);
+    }
+
+    void ShowConfigWindow()
+    {
+        if (!g_configWindowClassRegistered)
+        {
+            WNDCLASSA cls {};
+            cls.lpfnWndProc = ConfigWindowProc;
+            cls.hInstance = g_instance;
+            cls.lpszClassName = "DerethFXConfigWindow";
+            cls.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+            RegisterClassA(&cls);
+            g_configWindowClassRegistered = true;
+        }
+
+        if (g_configWindow == nullptr)
+        {
+            g_configWindow = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "DerethFXConfigWindow", "DerethFX Config",
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                CW_USEDEFAULT, CW_USEDEFAULT, 430, 360, nullptr, nullptr, g_instance, nullptr);
+        }
+
+        FillConfigWindow(g_configWindow);
+        ShowWindow(g_configWindow, SW_SHOWNORMAL);
+        SetForegroundWindow(g_configWindow);
+    }
+
+    void ToggleConfigWindow()
+    {
+        if (g_configWindow != nullptr && IsWindowVisible(g_configWindow))
+            ShowWindow(g_configWindow, SW_HIDE);
+        else
+            ShowConfigWindow();
+    }
+
+    void PollConfigHotkey()
+    {
+        PumpConfigWindowMessages();
+
+        const bool f9Down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+        if (f9Down && !g_f9WasDown)
+        {
+            Log("F9 config hotkey pressed");
+            ToggleConfigWindow();
+        }
+        g_f9WasDown = f9Down;
+    }
+bool LooksLikeUiDraw(UINT primitiveCount)
     {
         const bool fixedFunctionOverlay =
             g_stats.zEnable == FALSE
@@ -169,7 +680,7 @@ namespace
             g_sampleNextFrame = false;
             g_sampleActive = true;
             g_sampleDraws = 0;
-            Log("sample-start frame=%u", g_stats.frame);
+            DebugLog("sample-start frame=%u", g_stats.frame);
         }
 
         if (LooksLikeUiDraw(primitiveCount))
@@ -179,7 +690,7 @@ namespace
 
         if (g_sampleActive && g_sampleDraws < 220)
         {
-            Log("sample frame=%u draw=%u method=%s prim=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu vs=%d ps=%d up=%d uiGuess=%d",
+            DebugLog("sample frame=%u draw=%u method=%s prim=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu vs=%d ps=%d up=%d uiGuess=%d",
                 g_stats.frame,
                 g_drawOrdinal,
                 method,
@@ -204,6 +715,134 @@ namespace
         return bits;
     }
 
+
+    float DwordAsFloat(DWORD value)
+    {
+        float result = 0.0f;
+        static_assert(sizeof(result) == sizeof(value), "float/DWORD size mismatch");
+        std::memcpy(&result, &value, sizeof(result));
+        return result;
+    }
+
+    bool LooksLikePerspectiveProjection(const D3DMATRIX& matrix)
+    {
+        return std::fabs(matrix._34) > 0.90f
+            && std::fabs(matrix._34) < 1.10f
+            && std::fabs(matrix._44) < 0.001f
+            && matrix._33 > 1.0f
+            && matrix._43 < 0.0f;
+    }
+
+    bool ExtendFarPlane(D3DMATRIX& matrix)
+    {
+        if (!g_config.extendRenderDistance || !LooksLikePerspectiveProjection(matrix))
+            return false;
+
+        const float nearPlane = -matrix._43 / matrix._33;
+        const float currentFarPlane = -matrix._43 / (matrix._33 - 1.0f);
+        const float requestedFarPlane = g_config.farPlane;
+        if (nearPlane <= 0.0f || currentFarPlane <= 0.0f || requestedFarPlane <= currentFarPlane)
+            return false;
+
+        matrix._33 = requestedFarPlane / (requestedFarPlane - nearPlane);
+        matrix._43 = -nearPlane * requestedFarPlane / (requestedFarPlane - nearPlane);
+
+        if (!g_farPlaneLogged)
+        {
+            g_farPlaneLogged = true;
+            Log("render-distance enabled: farPlane %.1f -> %.1f near=%.3f", currentFarPlane, requestedFarPlane, nearPlane);
+        }
+        return true;
+    }
+
+    DWORD AdjustFogRenderState(D3DRENDERSTATETYPE state, DWORD value)
+    {
+        if (!g_config.volumetricFog)
+            return value;
+
+        switch (state)
+        {
+        case D3DRS_RANGEFOGENABLE:
+            return TRUE;
+        case D3DRS_FOGTABLEMODE:
+            return D3DFOG_EXP2;
+        case D3DRS_FOGVERTEXMODE:
+            return D3DFOG_LINEAR;
+        case D3DRS_FOGSTART:
+            return FloatAsDword(DwordAsFloat(value) * g_config.fogStartScale);
+        case D3DRS_FOGEND:
+        {
+            float fogEnd = DwordAsFloat(value) * g_config.fogEndScale;
+            if (fogEnd < g_config.minFogEnd)
+                fogEnd = g_config.minFogEnd;
+            return FloatAsDword(fogEnd);
+        }
+        case D3DRS_FOGDENSITY:
+            return FloatAsDword(DwordAsFloat(value) * g_config.fogDensityScale);
+        default:
+            return value;
+        }
+    }
+
+    void TrackRenderState(D3DRENDERSTATETYPE state, DWORD value)
+    {
+        if (state == D3DRS_ZENABLE)
+            g_stats.zEnable = value;
+        else if (state == D3DRS_ZWRITEENABLE)
+            g_stats.zWriteEnable = value;
+        else if (state == D3DRS_ALPHABLENDENABLE)
+            g_stats.alphaBlend = value;
+        else if (state == D3DRS_LIGHTING)
+            g_stats.lighting = value;
+    }
+
+    HRESULT SetConfiguredRenderState(IDirect3DDevice9* device, D3DRENDERSTATETYPE state, DWORD value)
+    {
+        TrackRenderState(state, value);
+        const DWORD adjusted = AdjustFogRenderState(state, value);
+        if (adjusted != value && !g_fogLogged)
+        {
+            g_fogLogged = true;
+            Log("atmosphere enabled: fogStartScale=%.2f fogEndScale=%.2f fogDensityScale=%.2f minFogEnd=%.1f",
+                g_config.fogStartScale,
+                g_config.fogEndScale,
+                g_config.fogDensityScale,
+                g_config.minFogEnd);
+        }
+        return device->SetRenderState(state, adjusted);
+    }
+
+    HRESULT SetConfiguredTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE state, const D3DMATRIX* matrix)
+    {
+        if (device == nullptr)
+            return D3DERR_INVALIDCALL;
+
+        g_lastDevice = device;
+        if (matrix != nullptr && state == D3DTS_PROJECTION)
+        {
+            g_lastProjection = *matrix;
+            g_hasLastProjection = true;
+        }
+
+        if (matrix == nullptr || state != D3DTS_PROJECTION || !g_config.extendRenderDistance)
+            return device->SetTransform(state, matrix);
+
+        D3DMATRIX adjusted = *matrix;
+        if (ExtendFarPlane(adjusted))
+            return device->SetTransform(state, &adjusted);
+        return device->SetTransform(state, matrix);
+    }
+
+    bool LooksLikeSoftAlphaDraw(UINT primitiveCount, bool up)
+    {
+        return g_config.protectAlphaLights
+            && !up
+            && primitiveCount >= 1
+            && g_stats.alphaBlend == TRUE
+            && g_stats.zWriteEnable == FALSE
+            && g_stats.zEnable != FALSE
+            && !LooksLikeUiDraw(primitiveCount);
+    }
     struct TextureDetailState
     {
         DWORD minFilter = D3DTEXF_POINT;
@@ -216,11 +855,13 @@ namespace
 
     bool ShouldApplyTextureDetail(UINT primitiveCount, bool up)
     {
-        return !up
-            && primitiveCount >= 4
+        return g_config.textureDetail
+            && !up
+            && primitiveCount >= g_config.detailMinPrimitiveCount
             && g_stage0TextureBound
             && !g_hasPixelShader
             && !LooksLikeUiDraw(primitiveCount)
+            && !LooksLikeSoftAlphaDraw(primitiveCount, up)
             && g_stats.zEnable != FALSE;
     }
 
@@ -241,14 +882,14 @@ namespace
         device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
         device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_ANISOTROPIC);
         device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-        device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, 8);
-        device->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, FloatAsDword(-0.65f));
+        device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, g_config.detailAnisotropy);
+        device->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, FloatAsDword(g_config.detailMipBias));
         g_stats.detailDraws++;
 
         if (!g_textureDetailLogged)
         {
             g_textureDetailLogged = true;
-            Log("texture-detail enabled: anisotropic=8 mipBias=-0.65 world-only");
+            Log("texture-detail enabled: anisotropic=%lu mipBias=%.2f world-only", g_config.detailAnisotropy, g_config.detailMipBias);
         }
 
         return state;
@@ -290,9 +931,10 @@ namespace
     bool LooksLikeWaterDraw(IDirect3DDevice9* device, UINT primitiveCount, bool up)
     {
         UNREFERENCED_PARAMETER(device);
-        return !up
-            && primitiveCount >= 80
-            && primitiveCount <= 220
+        return g_config.waterReflection
+            && !up
+            && primitiveCount >= g_config.waterMinPrimitiveCount
+            && primitiveCount <= g_config.waterMaxPrimitiveCount
             && g_stage0TextureBound
             && !LooksLikeUiDraw(primitiveCount)
             && g_stats.zEnable != FALSE
@@ -323,7 +965,7 @@ namespace
                     const float fx = static_cast<float>(x) / static_cast<float>(Size - 1);
                     const float fy = static_cast<float>(y) / static_cast<float>(Size - 1);
                     const float streak = ((x + y) % 17) < 3 ? 1.0f : 0.0f;
-                    const BYTE a = 72;
+                    const BYTE a = static_cast<BYTE>(72.0f * g_config.waterStrength);
                     const BYTE r = static_cast<BYTE>(42 + 74 * (1.0f - fy) + 38 * streak);
                     const BYTE g = static_cast<BYTE>(112 + 78 * (1.0f - fy) + 36 * streak);
                     const BYTE b = static_cast<BYTE>(154 + 82 * fx + 42 * streak);
@@ -399,7 +1041,7 @@ namespace
         if (!g_waterReflectionLogged)
         {
             g_waterReflectionLogged = true;
-            Log("water-reflection enabled: tuned indexed water-like stage1 reflection overlay");
+            Log("water-reflection enabled: tuned indexed water-like stage1 reflection overlay strength=%.2f", g_config.waterStrength);
         }
 
         return state;
@@ -425,6 +1067,182 @@ namespace
         if (state.stage1Texture != nullptr)
             state.stage1Texture->Release();
     }
+
+
+    bool ShouldApplySurfaceDetail(UINT primitiveCount, bool up)
+    {
+        return g_config.surfaceDetail
+            && g_config.surfaceDetailStrength > 0.0f
+            && !up
+            && primitiveCount >= g_config.detailMinPrimitiveCount
+            && g_stage0TextureBound
+            && !g_hasPixelShader
+            && !LooksLikeUiDraw(primitiveCount)
+            && !LooksLikeSoftAlphaDraw(primitiveCount, up)
+            && !LooksLikeWaterDraw(nullptr, primitiveCount, up)
+            && g_stats.alphaBlend == FALSE
+            && g_stats.zEnable != FALSE;
+    }
+
+    struct SurfaceDetailState
+    {
+        IDirect3DBaseTexture9* stage0Texture = nullptr;
+        IDirect3DBaseTexture9* stage1Texture = nullptr;
+        DWORD colorOp = D3DTOP_DISABLE;
+        DWORD colorArg1 = D3DTA_TEXTURE;
+        DWORD colorArg2 = D3DTA_CURRENT;
+        DWORD alphaOp = D3DTOP_DISABLE;
+        DWORD texCoordIndex = 1;
+        DWORD transformFlags = D3DTTFF_DISABLE;
+        DWORD minFilter = D3DTEXF_POINT;
+        DWORD magFilter = D3DTEXF_POINT;
+        DWORD addressU = D3DTADDRESS_WRAP;
+        DWORD addressV = D3DTADDRESS_WRAP;
+        bool active = false;
+    };
+
+    SurfaceDetailState ApplySurfaceDetail(IDirect3DDevice9* device, UINT primitiveCount, bool up)
+    {
+        SurfaceDetailState state {};
+        if (device == nullptr || !ShouldApplySurfaceDetail(primitiveCount, up))
+            return state;
+
+        if (FAILED(device->GetTexture(0, &state.stage0Texture)) || state.stage0Texture == nullptr)
+            return state;
+
+        if (FAILED(device->GetTexture(1, &state.stage1Texture))
+            || FAILED(device->GetTextureStageState(1, D3DTSS_COLOROP, &state.colorOp))
+            || FAILED(device->GetTextureStageState(1, D3DTSS_COLORARG1, &state.colorArg1))
+            || FAILED(device->GetTextureStageState(1, D3DTSS_COLORARG2, &state.colorArg2))
+            || FAILED(device->GetTextureStageState(1, D3DTSS_ALPHAOP, &state.alphaOp))
+            || FAILED(device->GetTextureStageState(1, D3DTSS_TEXCOORDINDEX, &state.texCoordIndex))
+            || FAILED(device->GetTextureStageState(1, D3DTSS_TEXTURETRANSFORMFLAGS, &state.transformFlags))
+            || FAILED(device->GetSamplerState(1, D3DSAMP_MINFILTER, &state.minFilter))
+            || FAILED(device->GetSamplerState(1, D3DSAMP_MAGFILTER, &state.magFilter))
+            || FAILED(device->GetSamplerState(1, D3DSAMP_ADDRESSU, &state.addressU))
+            || FAILED(device->GetSamplerState(1, D3DSAMP_ADDRESSV, &state.addressV)))
+        {
+            if (state.stage1Texture != nullptr)
+                state.stage1Texture->Release();
+            if (state.stage0Texture != nullptr)
+                state.stage0Texture->Release();
+            state.stage0Texture = nullptr;
+            return state;
+        }
+
+        state.active = true;
+        DWORD colorOp = D3DTOP_ADDSMOOTH;
+        if (g_config.surfaceDetailStrength >= 0.75f)
+            colorOp = D3DTOP_ADDSIGNED;
+        else if (g_config.surfaceDetailStrength >= 0.50f)
+            colorOp = D3DTOP_MODULATE2X;
+
+        device->SetTexture(1, state.stage0Texture);
+        device->SetTextureStageState(1, D3DTSS_COLOROP, colorOp);
+        device->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_CURRENT);
+        device->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_TEXTURE);
+        device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        device->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 0);
+        device->SetTextureStageState(1, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+        device->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        device->SetSamplerState(1, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        device->SetSamplerState(1, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+        device->SetSamplerState(1, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+
+        if (!g_surfaceDetailLogged)
+        {
+            g_surfaceDetailLogged = true;
+            Log("surface-detail enabled: same-texture modulation strength=%.2f op=%s", g_config.surfaceDetailStrength, colorOp == D3DTOP_ADDSIGNED ? "addsigned" : (colorOp == D3DTOP_MODULATE2X ? "modulate2x" : "addsmooth"));
+        }
+        return state;
+    }
+
+    void RestoreSurfaceDetail(IDirect3DDevice9* device, const SurfaceDetailState& state)
+    {
+        if (device == nullptr || !state.active)
+            return;
+        device->SetTexture(1, state.stage1Texture);
+        device->SetTextureStageState(1, D3DTSS_COLOROP, state.colorOp);
+        device->SetTextureStageState(1, D3DTSS_COLORARG1, state.colorArg1);
+        device->SetTextureStageState(1, D3DTSS_COLORARG2, state.colorArg2);
+        device->SetTextureStageState(1, D3DTSS_ALPHAOP, state.alphaOp);
+        device->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, state.texCoordIndex);
+        device->SetTextureStageState(1, D3DTSS_TEXTURETRANSFORMFLAGS, state.transformFlags);
+        device->SetSamplerState(1, D3DSAMP_MINFILTER, state.minFilter);
+        device->SetSamplerState(1, D3DSAMP_MAGFILTER, state.magFilter);
+        device->SetSamplerState(1, D3DSAMP_ADDRESSU, state.addressU);
+        device->SetSamplerState(1, D3DSAMP_ADDRESSV, state.addressV);
+        if (state.stage1Texture != nullptr)
+            state.stage1Texture->Release();
+        if (state.stage0Texture != nullptr)
+            state.stage0Texture->Release();
+    }
+
+    bool ShouldSuppressShadowPlane(UINT primitiveCount, bool up)
+    {
+        UNREFERENCED_PARAMETER(up);
+        const bool smallAlphaWorldQuad = primitiveCount >= 1
+            && primitiveCount <= g_config.shadowMaxPrimitiveCount
+            && g_stage0TextureBound
+            && g_stats.alphaBlend == TRUE
+            && g_stats.zWriteEnable == FALSE
+            && g_stats.zEnable != FALSE
+            && !LooksLikeUiDraw(primitiveCount)
+            && !LooksLikeWaterDraw(nullptr, primitiveCount, false);
+
+        if (!g_config.suppressShadowPlanes || !smallAlphaWorldQuad)
+            return false;
+
+        if (!g_shadowPlaneLogged)
+        {
+            g_shadowPlaneLogged = true;
+            Log("shadow-plane suppression enabled: skipped alpha world quads prims<=%u", g_config.shadowMaxPrimitiveCount);
+        }
+        return true;
+    }
+    struct SoftAlphaState
+    {
+        DWORD alphaTest = FALSE;
+        DWORD alphaFunc = D3DCMP_ALWAYS;
+        DWORD alphaRef = 0;
+        DWORD srcBlend = D3DBLEND_SRCALPHA;
+        DWORD destBlend = D3DBLEND_INVSRCALPHA;
+        bool active = false;
+    };
+
+    SoftAlphaState ApplySoftAlphaFix(IDirect3DDevice9* device, UINT primitiveCount, bool up)
+    {
+        SoftAlphaState state {};
+        if (device == nullptr || !g_config.softAlphaFix || !LooksLikeSoftAlphaDraw(primitiveCount, up) || LooksLikeWaterDraw(device, primitiveCount, up))
+            return state;
+
+        if (FAILED(device->GetRenderState(D3DRS_ALPHATESTENABLE, &state.alphaTest))
+            || FAILED(device->GetRenderState(D3DRS_ALPHAFUNC, &state.alphaFunc))
+            || FAILED(device->GetRenderState(D3DRS_ALPHAREF, &state.alphaRef))
+            || FAILED(device->GetRenderState(D3DRS_SRCBLEND, &state.srcBlend))
+            || FAILED(device->GetRenderState(D3DRS_DESTBLEND, &state.destBlend)))
+            return state;
+
+        state.active = true;
+        device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+        device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);
+        device->SetRenderState(D3DRS_ALPHAREF, g_config.softAlphaRef);
+        device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+        device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        return state;
+    }
+
+    void RestoreSoftAlphaFix(IDirect3DDevice9* device, const SoftAlphaState& state)
+    {
+        if (device == nullptr || !state.active)
+            return;
+
+        device->SetRenderState(D3DRS_ALPHATESTENABLE, state.alphaTest);
+        device->SetRenderState(D3DRS_ALPHAFUNC, state.alphaFunc);
+        device->SetRenderState(D3DRS_ALPHAREF, state.alphaRef);
+        device->SetRenderState(D3DRS_SRCBLEND, state.srcBlend);
+        device->SetRenderState(D3DRS_DESTBLEND, state.destBlend);
+    }
     struct DynamicLightingState
     {
         DWORD ambient = 0;
@@ -442,11 +1260,14 @@ namespace
 
     bool ShouldApplyDynamicLighting(UINT primitiveCount, bool up)
     {
-        return !up
-            && primitiveCount >= 4
+        return g_config.dynamicLighting
+            && !up
+            && primitiveCount >= g_config.lightMinPrimitiveCount
+            && primitiveCount <= g_config.lightMaxPrimitiveCount
             && !g_hasPixelShader
             && !LooksLikeUiDraw(primitiveCount)
             && !LooksLikeWaterDraw(nullptr, primitiveCount, up)
+            && !LooksLikeSoftAlphaDraw(primitiveCount, up)
             && g_stats.zEnable != FALSE
             && g_stats.lighting == TRUE;
     }
@@ -469,7 +1290,7 @@ namespace
         device->GetLightEnable(7, &state.lightEnabled);
 
         state.active = true;
-        device->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_XRGB(42, 42, 50));
+        device->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_XRGB(g_config.ambientR, g_config.ambientG, g_config.ambientB));
         device->SetRenderState(D3DRS_SPECULARENABLE, TRUE);
         device->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
         device->SetRenderState(D3DRS_LOCALVIEWER, TRUE);
@@ -478,27 +1299,33 @@ namespace
         if (state.hadMaterial)
         {
             D3DMATERIAL9 material = state.material;
-            if (material.Specular.r < 0.35f) material.Specular.r = 0.35f;
-            if (material.Specular.g < 0.35f) material.Specular.g = 0.35f;
-            if (material.Specular.b < 0.40f) material.Specular.b = 0.40f;
-            if (material.Power < 18.0f) material.Power = 18.0f;
+            if (material.Specular.r < g_config.materialSpecular) material.Specular.r = g_config.materialSpecular;
+            if (material.Specular.g < g_config.materialSpecular) material.Specular.g = g_config.materialSpecular;
+            if (material.Specular.b < g_config.materialSpecularBlue) material.Specular.b = g_config.materialSpecularBlue;
+            if (material.Power < g_config.materialPower) material.Power = g_config.materialPower;
             device->SetMaterial(&material);
         }
 
+        const float seconds = static_cast<float>(GetTickCount() & 0x00ffffff) * 0.001f;
+        float flicker = 1.0f + g_config.lightFlickerStrength * (0.65f * std::sin(seconds * 5.1f) + 0.35f * std::sin(seconds * 9.7f));
+        if (flicker < 0.70f) flicker = 0.70f;
+        if (flicker > 1.30f) flicker = 1.30f;
+        const float sway = g_config.lightMotionStrength;
+
         D3DLIGHT9 light {};
         light.Type = D3DLIGHT_DIRECTIONAL;
-        light.Diffuse.r = 0.22f;
-        light.Diffuse.g = 0.24f;
-        light.Diffuse.b = 0.28f;
-        light.Specular.r = 0.45f;
-        light.Specular.g = 0.48f;
-        light.Specular.b = 0.55f;
+        light.Diffuse.r = 0.22f * g_config.diffuseStrength * flicker;
+        light.Diffuse.g = 0.24f * g_config.diffuseStrength * flicker;
+        light.Diffuse.b = 0.28f * g_config.diffuseStrength * flicker;
+        light.Specular.r = 0.45f * g_config.specularStrength * flicker;
+        light.Specular.g = 0.48f * g_config.specularStrength * flicker;
+        light.Specular.b = 0.55f * g_config.specularStrength * flicker;
         light.Ambient.r = 0.03f;
         light.Ambient.g = 0.035f;
         light.Ambient.b = 0.045f;
-        light.Direction.x = -0.35f;
-        light.Direction.y = -0.65f;
-        light.Direction.z = 0.45f;
+        light.Direction.x = -0.35f + sway * 0.35f * std::sin(seconds * 0.73f);
+        light.Direction.y = -0.65f + sway * 0.18f * std::sin(seconds * 0.49f);
+        light.Direction.z = 0.45f + sway * 0.30f * std::sin(seconds * 0.61f);
         device->SetLight(7, &light);
         device->LightEnable(7, TRUE);
         g_stats.dynamicLightDraws++;
@@ -506,7 +1333,7 @@ namespace
         if (!g_dynamicLightingLogged)
         {
             g_dynamicLightingLogged = true;
-            Log("dynamic-lighting enabled: ambient/specular/headlight world-only");
+            Log("dynamic-lighting enabled: ambient/specular/headlight object-gated prims=%u-%u ambient=%u,%u,%u diffuse=%.2f specular=%.2f flicker=%.2f motion=%.2f alphaProtect=%d", g_config.lightMinPrimitiveCount, g_config.lightMaxPrimitiveCount, g_config.ambientR, g_config.ambientG, g_config.ambientB, g_config.diffuseStrength, g_config.specularStrength, g_config.lightFlickerStrength, g_config.lightMotionStrength, g_config.protectAlphaLights ? 1 : 0);
         }
 
         return state;
@@ -529,6 +1356,98 @@ namespace
             device->SetLight(7, &state.light);
         device->LightEnable(7, state.lightEnabled);
     }
+
+    struct MetalSheenState
+    {
+        DWORD specularEnable = FALSE;
+        DWORD normalizeNormals = FALSE;
+        DWORD localViewer = FALSE;
+        D3DMATERIAL9 material {};
+        bool hadMaterial = false;
+        bool active = false;
+    };
+
+    bool ShouldApplyMetalSheen(UINT primitiveCount, bool up)
+    {
+        return g_config.metalSheen
+            && !up
+            && primitiveCount >= g_config.metalMinPrimitiveCount
+            && primitiveCount <= g_config.metalMaxPrimitiveCount
+            && g_stage0TextureBound
+            && !g_hasPixelShader
+            && !LooksLikeUiDraw(primitiveCount)
+            && !LooksLikeWaterDraw(nullptr, primitiveCount, up)
+            && !LooksLikeSoftAlphaDraw(primitiveCount, up)
+            && g_stats.alphaBlend == FALSE
+            && g_stats.zEnable != FALSE
+            && g_stats.lighting == TRUE;
+    }
+
+    MetalSheenState ApplyMetalSheen(IDirect3DDevice9* device, UINT primitiveCount, bool up)
+    {
+        MetalSheenState state {};
+        if (device == nullptr || !ShouldApplyMetalSheen(primitiveCount, up))
+            return state;
+
+        if (FAILED(device->GetRenderState(D3DRS_SPECULARENABLE, &state.specularEnable))
+            || FAILED(device->GetRenderState(D3DRS_NORMALIZENORMALS, &state.normalizeNormals))
+            || FAILED(device->GetRenderState(D3DRS_LOCALVIEWER, &state.localViewer)))
+            return state;
+
+        state.hadMaterial = SUCCEEDED(device->GetMaterial(&state.material));
+        if (!state.hadMaterial)
+            return state;
+
+        const float dr = state.material.Diffuse.r;
+        const float dg = state.material.Diffuse.g;
+        const float db = state.material.Diffuse.b;
+        float maxDiffuse = dr;
+        if (dg > maxDiffuse) maxDiffuse = dg;
+        if (db > maxDiffuse) maxDiffuse = db;
+        float minDiffuse = dr;
+        if (dg < minDiffuse) minDiffuse = dg;
+        if (db < minDiffuse) minDiffuse = db;
+        const float saturation = maxDiffuse - minDiffuse;
+
+        // Avoid skin, cloth, bright paint, and saturated dyed armor. This pass is only
+        // meant for dull neutral metal-like materials.
+        if (saturation > 0.18f || maxDiffuse > 0.82f)
+            return state;
+
+        state.active = true;
+        device->SetRenderState(D3DRS_SPECULARENABLE, TRUE);
+        device->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
+        device->SetRenderState(D3DRS_LOCALVIEWER, TRUE);
+
+        if (state.hadMaterial)
+        {
+            D3DMATERIAL9 material = state.material;
+            if (material.Specular.r < g_config.metalSpecular) material.Specular.r = g_config.metalSpecular;
+            if (material.Specular.g < g_config.metalSpecular) material.Specular.g = g_config.metalSpecular;
+            if (material.Specular.b < g_config.metalSpecularBlue) material.Specular.b = g_config.metalSpecularBlue;
+            if (material.Power < g_config.metalPower) material.Power = g_config.metalPower;
+            device->SetMaterial(&material);
+        }
+
+        if (!g_metalSheenLogged)
+        {
+            g_metalSheenLogged = true;
+            Log("metal-sheen enabled: material-only prims=%u-%u specular=%.2f blue=%.2f power=%.1f", g_config.metalMinPrimitiveCount, g_config.metalMaxPrimitiveCount, g_config.metalSpecular, g_config.metalSpecularBlue, g_config.metalPower);
+        }
+        return state;
+    }
+
+    void RestoreMetalSheen(IDirect3DDevice9* device, const MetalSheenState& state)
+    {
+        if (device == nullptr || !state.active)
+            return;
+
+        device->SetRenderState(D3DRS_SPECULARENABLE, state.specularEnable);
+        device->SetRenderState(D3DRS_NORMALIZENORMALS, state.normalizeNormals);
+        device->SetRenderState(D3DRS_LOCALVIEWER, state.localViewer);
+        if (state.hadMaterial)
+            device->SetMaterial(&state.material);
+    }
     bool LooksLikeWaterCandidate(UINT primitiveCount, bool up)
     {
         return !up
@@ -541,7 +1460,7 @@ namespace
 
     void LogWaterCandidate(IDirect3DDevice9* device, UINT primitiveCount, bool up, const char* method)
     {
-        if (!LooksLikeWaterCandidate(primitiveCount, up))
+        if (!g_config.waterDiagnostics || !LooksLikeWaterCandidate(primitiveCount, up))
             return;
 
         g_stats.waterCandidateDraws++;
@@ -573,7 +1492,7 @@ namespace
             baseTexture->Release();
         }
 
-        Log("water-candidate frame=%u draw=%u method=%s prim=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu tex=%ux%u fmt=0x%08x levels=%u",
+        DebugLog("water-candidate frame=%u draw=%u method=%s prim=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu tex=%ux%u fmt=0x%08x levels=%u",
             g_stats.frame,
             g_drawOrdinal,
             method,
@@ -611,17 +1530,17 @@ namespace
     void LogFrameSummary(const char* source)
     {
         auto totalDraws = g_stats.drawPrimitive + g_stats.drawIndexedPrimitive + g_stats.drawPrimitiveUP + g_stats.drawIndexedPrimitiveUP;
-        if (!g_sampleDone && !g_sampleActive && !g_sampleNextFrame && totalDraws > 180)
+        if (g_config.drawSampling && !g_sampleDone && !g_sampleActive && !g_sampleNextFrame && totalDraws > 180)
             g_sampleNextFrame = true;
 
         if (g_sampleActive)
         {
-            Log("sample-end frame=%u sampled=%u totalDraws=%u", g_stats.frame, g_sampleDraws, g_drawOrdinal);
+            DebugLog("sample-end frame=%u sampled=%u totalDraws=%u", g_stats.frame, g_sampleDraws, g_drawOrdinal);
             g_sampleActive = false;
             g_sampleDone = true;
         }
 
-        if (g_stats.frame < 30 || (g_stats.frame % 300) == 0)
+        if (g_config.frameSummaries && (g_stats.frame < 30 || (g_stats.frame % 300) == 0))
         {
             Log("%s frame=%u begin=%u end=%u clear=%u dp=%u dip=%u dpup=%u dipup=%u worldLike=%u uiLike=%u detail=%u waterCand=%u waterFx=%u lightFx=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu",
                 source,
@@ -672,7 +1591,7 @@ namespace
 
     HRESULT WINAPI HookSwapChainPresent(IDirect3DSwapChain9* self, const RECT* src, const RECT* dst, HWND hwnd, const RGNDATA* dirty, DWORD flags)
     {
-        if (g_stats.frame < 30 || (g_stats.frame % 300) == 0)
+        if (g_config.frameSummaries && (g_stats.frame < 30 || (g_stats.frame % 300) == 0))
             Log("swapchain-present frame=%u worldLike=%u uiLike=%u", g_stats.frame, g_stats.worldCandidateDraws, g_stats.uiCandidateDraws);
         return g_origSwapChainPresent(self, src, dst, hwnd, dirty, flags);
     }
@@ -697,7 +1616,8 @@ namespace
     }
     HRESULT WINAPI HookPresent(IDirect3DDevice9* self, const RECT* src, const RECT* dst, HWND hwnd, const RGNDATA* dirty)
     {
-        if (g_stats.frame < 30 || (g_stats.frame % 300) == 0)
+        PollConfigHotkey();
+        if (g_config.frameSummaries && (g_stats.frame < 30 || (g_stats.frame % 300) == 0))
         {
             Log("frame=%u begin=%u end=%u clear=%u dp=%u dip=%u dpup=%u dipup=%u worldLike=%u uiLike=%u detail=%u waterCand=%u waterFx=%u lightFx=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu",
                 g_stats.frame,
@@ -749,6 +1669,7 @@ namespace
 
     HRESULT WINAPI HookEndScene(IDirect3DDevice9* self)
     {
+        PollConfigHotkey();
         g_stats.endScene++;
         g_stats.inScene = false;
         return g_origEndScene(self);
@@ -757,8 +1678,8 @@ namespace
     HRESULT WINAPI HookClear(IDirect3DDevice9* self, DWORD count, const D3DRECT* rects, DWORD flags, D3DCOLOR color, float z, DWORD stencil)
     {
         g_stats.clears++;
-        if (g_stats.frame < 20)
-            Log("clear frame=%u flags=0x%08lx color=0x%08lx z=%.3f", g_stats.frame, flags, color, z);
+        if (g_config.frameSummaries && g_stats.frame < 20)
+            DebugLog("clear frame=%u flags=0x%08lx color=0x%08lx z=%.3f", g_stats.frame, flags, color, z);
         return g_origClear(self, count, rects, flags, color, z, stencil);
     }
 
@@ -898,6 +1819,7 @@ namespace
         HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) override { Log("proxy Reset(windowed=%d, %ux%u)", pPresentationParameters ? pPresentationParameters->Windowed : -1, pPresentationParameters ? pPresentationParameters->BackBufferWidth : 0, pPresentationParameters ? pPresentationParameters->BackBufferHeight : 0); return real_->Reset(pPresentationParameters); }
         HRESULT STDMETHODCALLTYPE Present(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion) override
         {
+            PollConfigHotkey();
             LogFrameSummary("proxy-present");
             auto hr = real_->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
             ResetFrameStats();
@@ -927,9 +1849,9 @@ namespace
         HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9* pNewZStencil) override { return real_->SetDepthStencilSurface(pNewZStencil); }
         HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9** ppZStencilSurface) override { return real_->GetDepthStencilSurface(ppZStencilSurface); }
         HRESULT STDMETHODCALLTYPE BeginScene() override { g_stats.beginScene++; return real_->BeginScene(); }
-        HRESULT STDMETHODCALLTYPE EndScene() override { g_stats.endScene++; LogFrameSummary("proxy-endscene"); auto hr = real_->EndScene(); ResetFrameStats(); return hr; }
+        HRESULT STDMETHODCALLTYPE EndScene() override { PollConfigHotkey(); g_stats.endScene++; LogFrameSummary("proxy-endscene"); auto hr = real_->EndScene(); ResetFrameStats(); return hr; }
         HRESULT STDMETHODCALLTYPE Clear(DWORD Count, const D3DRECT* pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil) override { g_stats.clears++; return real_->Clear(Count, pRects, Flags, Color, Z, Stencil); }
-        HRESULT STDMETHODCALLTYPE SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) override { return real_->SetTransform(State, pMatrix); }
+        HRESULT STDMETHODCALLTYPE SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) override { return SetConfiguredTransform(real_, State, pMatrix); }
         HRESULT STDMETHODCALLTYPE GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix) override { return real_->GetTransform(State, pMatrix); }
         HRESULT STDMETHODCALLTYPE MultiplyTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) override { return real_->MultiplyTransform(State, pMatrix); }
         HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9* pViewport) override { return real_->SetViewport(pViewport); }
@@ -942,7 +1864,7 @@ namespace
         HRESULT STDMETHODCALLTYPE GetLightEnable(DWORD Index, BOOL* pEnable) override { return real_->GetLightEnable(Index, pEnable); }
         HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD Index, const float* pPlane) override { return real_->SetClipPlane(Index, pPlane); }
         HRESULT STDMETHODCALLTYPE GetClipPlane(DWORD Index, float* pPlane) override { return real_->GetClipPlane(Index, pPlane); }
-        HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) override { if (State == D3DRS_ZENABLE) g_stats.zEnable = Value; else if (State == D3DRS_ZWRITEENABLE) g_stats.zWriteEnable = Value; else if (State == D3DRS_ALPHABLENDENABLE) g_stats.alphaBlend = Value; else if (State == D3DRS_LIGHTING) g_stats.lighting = Value; return real_->SetRenderState(State, Value); }
+        HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) override { return SetConfiguredRenderState(real_, State, Value); }
         HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE State, DWORD* pValue) override { return real_->GetRenderState(State, pValue); }
         HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** ppSB) override { return real_->CreateStateBlock(Type, ppSB); }
         HRESULT STDMETHODCALLTYPE BeginStateBlock() override { return real_->BeginStateBlock(); }
@@ -966,10 +1888,10 @@ namespace
         BOOL STDMETHODCALLTYPE GetSoftwareVertexProcessing() override { return real_->GetSoftwareVertexProcessing(); }
         HRESULT STDMETHODCALLTYPE SetNPatchMode(float nSegments) override { return real_->SetNPatchMode(nSegments); }
         float STDMETHODCALLTYPE GetNPatchMode() override { return real_->GetNPatchMode(); }
-        HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) override { g_stats.drawPrimitive++; CountDraw(false, PrimitiveCount, "dp"); LogWaterCandidate(real_, PrimitiveCount, false, "dp"); auto water = ApplyWaterReflection(real_, PrimitiveCount, false); auto light = ApplyDynamicLighting(real_, PrimitiveCount, false); auto detail = ApplyTextureDetail(real_, PrimitiveCount, false); auto hr = real_->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount); RestoreTextureDetail(real_, detail); RestoreDynamicLighting(real_, light); RestoreWaterReflection(real_, water); return hr; }
-        HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount) override { g_stats.drawIndexedPrimitive++; CountDraw(false, primCount, "dip"); LogWaterCandidate(real_, primCount, false, "dip"); auto water = ApplyWaterReflection(real_, primCount, false); auto light = ApplyDynamicLighting(real_, primCount, false); auto detail = ApplyTextureDetail(real_, primCount, false); auto hr = real_->DrawIndexedPrimitive(Type, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount); RestoreTextureDetail(real_, detail); RestoreDynamicLighting(real_, light); RestoreWaterReflection(real_, water); return hr; }
-        HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, const void* pVertexStreamZeroData, UINT VertexStreamZeroStride) override { g_stats.drawPrimitiveUP++; CountDraw(true, PrimitiveCount, "dpup"); return real_->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride); }
-        HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertices, UINT PrimitiveCount, const void* pIndexData, D3DFORMAT IndexDataFormat, const void* pVertexStreamZeroData, UINT VertexStreamZeroStride) override { g_stats.drawIndexedPrimitiveUP++; CountDraw(true, PrimitiveCount, "dipup"); return real_->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride); }
+        HRESULT STDMETHODCALLTYPE DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) override { g_stats.drawPrimitive++; CountDraw(false, PrimitiveCount, "dp"); if (ShouldSuppressShadowPlane(PrimitiveCount, false)) return D3D_OK; LogWaterCandidate(real_, PrimitiveCount, false, "dp"); auto alpha = ApplySoftAlphaFix(real_, PrimitiveCount, false); auto water = ApplyWaterReflection(real_, PrimitiveCount, false); auto light = ApplyDynamicLighting(real_, PrimitiveCount, false); auto metal = ApplyMetalSheen(real_, PrimitiveCount, false); auto detail = ApplyTextureDetail(real_, PrimitiveCount, false); auto surface = ApplySurfaceDetail(real_, PrimitiveCount, false); auto hr = real_->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount); RestoreSurfaceDetail(real_, surface); RestoreTextureDetail(real_, detail); RestoreMetalSheen(real_, metal); RestoreDynamicLighting(real_, light); RestoreWaterReflection(real_, water); RestoreSoftAlphaFix(real_, alpha); return hr; }
+        HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount) override { g_stats.drawIndexedPrimitive++; CountDraw(false, primCount, "dip"); if (ShouldSuppressShadowPlane(primCount, false)) return D3D_OK; LogWaterCandidate(real_, primCount, false, "dip"); auto alpha = ApplySoftAlphaFix(real_, primCount, false); auto water = ApplyWaterReflection(real_, primCount, false); auto light = ApplyDynamicLighting(real_, primCount, false); auto metal = ApplyMetalSheen(real_, primCount, false); auto detail = ApplyTextureDetail(real_, primCount, false); auto surface = ApplySurfaceDetail(real_, primCount, false); auto hr = real_->DrawIndexedPrimitive(Type, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount); RestoreSurfaceDetail(real_, surface); RestoreTextureDetail(real_, detail); RestoreMetalSheen(real_, metal); RestoreDynamicLighting(real_, light); RestoreWaterReflection(real_, water); RestoreSoftAlphaFix(real_, alpha); return hr; }
+        HRESULT STDMETHODCALLTYPE DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, const void* pVertexStreamZeroData, UINT VertexStreamZeroStride) override { g_stats.drawPrimitiveUP++; CountDraw(true, PrimitiveCount, "dpup"); if (ShouldSuppressShadowPlane(PrimitiveCount, true)) return D3D_OK; return real_->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride); }
+        HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertices, UINT PrimitiveCount, const void* pIndexData, D3DFORMAT IndexDataFormat, const void* pVertexStreamZeroData, UINT VertexStreamZeroStride) override { g_stats.drawIndexedPrimitiveUP++; CountDraw(true, PrimitiveCount, "dipup"); if (ShouldSuppressShadowPlane(PrimitiveCount, true)) return D3D_OK; return real_->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride); }
         HRESULT STDMETHODCALLTYPE ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDecl, DWORD Flags) override { return real_->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags); }
         HRESULT STDMETHODCALLTYPE CreateVertexDeclaration(const D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl) override { return real_->CreateVertexDeclaration(pVertexElements, ppDecl); }
         HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9* pDecl) override { g_stats.fvf = 0; return real_->SetVertexDeclaration(pDecl); }
@@ -1142,16 +2064,14 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
+        g_instance = instance;
         DisableThreadLibraryCalls(instance);
-        Log("AC D3D9 proxy loaded.");
+        LoadConfig();
+        Log("AC D3D9 proxy loaded. config=%s logging=%d", g_configPath, static_cast<int>(g_config.logging));
     }
     else if (reason == DLL_PROCESS_DETACH)
     {
-        if (g_reflectionTexture != nullptr)
-        {
-            g_reflectionTexture->Release();
-            g_reflectionTexture = nullptr;
-        }
+        ReleaseGeneratedTextures();
         Log("AC D3D9 proxy unloaded.");
     }
     return TRUE;

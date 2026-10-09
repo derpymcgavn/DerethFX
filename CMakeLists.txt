@@ -16,3 +16,15 @@ set_target_properties(d3d9 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+add_custom_command(TARGET d3d9 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/derethfx.ini"
+        "$<TARGET_FILE_DIR:d3d9>/derethfx.ini"
+)
+add_custom_command(TARGET d3d9 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:d3d9>/presets"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/presets/ReShadePreset.ini"
+        "$<TARGET_FILE_DIR:d3d9>/presets/ReShadePreset.ini"
+)
