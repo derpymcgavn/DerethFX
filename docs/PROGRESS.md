@@ -68,3 +68,8 @@ The config system is now in place. `derethfx.ini` covers effect toggles, texture
 - Added `Vibrance` and subtle `FilmGrain` to give clouds, sky gradients, and fog a little more life without making UI text crunchy.
 - Tuned the pseudo-bloom/local-contrast pass through `FakeHDR` instead of unavailable bloom shaders, avoiding the invalid-technique issue from earlier ReShade tests.
 - Added `presets/DerethFX_Dream.ini` as a stronger screenshot-oriented look for continued tuning.
+# 2026-10-09 - Challenge HUD
+
+- Added an optional click-through Win32 HUD overlay for challenge modes.
+- `F10` cycles the HUD through off, crawler, and ironman modes.
+- Added F9 config controls and `[HUD]` INI settings for mode, position, and opacity.

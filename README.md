@@ -71,6 +71,21 @@ Press `F9` in-game to open the DerethFX config panel. `Save + Reload` writes `de
 
 The goal is a warmer, more immersive night/storm look with more life in the sky texture while keeping UI text readable. `presets/DerethFX_Dream.ini` is a bolder variant with stronger sunset warmth, more bloom-like glow, and a touch more grain for testing screenshots.
 
+
+## Mode HUD
+
+DerethFX includes an optional click-through HUD overlay for challenge runs. Press `F10` in-game to cycle `Off -> Crawler -> Ironman`, or open the `F9` config panel and set the mode there. The HUD is visual only; it does not enforce rules or alter gameplay.
+
+Config keys live under `[HUD]`:
+
+```ini
+[HUD]
+enabled=0
+mode=crawler
+x=18
+y=92
+opacity=220
+```
 ## Build
 
 This project is built with CMake and MSVC as a 32-bit DLL.

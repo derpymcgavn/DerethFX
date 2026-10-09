@@ -38,6 +38,11 @@ namespace
         bool drawSampling = false;
         bool waterDiagnostics = false;
         bool chainLoadD3D9 = false;
+        bool hudEnabled = false;
+        char hudMode[32] = "crawler";
+        int hudX = 18;
+        int hudY = 92;
+        BYTE hudOpacity = 220;
         char chainD3D9Path[MAX_PATH] = "reshade_d3d9.dll";
         UINT shadowMaxPrimitiveCount = 2;
         UINT detailMinPrimitiveCount = 4;
@@ -155,6 +160,11 @@ namespace
         g_config.chainLoadD3D9 = ReadBool("ReShade", "chainLoad", g_config.chainLoadD3D9);
         GetPrivateProfileStringA("ReShade", "dll", g_config.chainD3D9Path, g_config.chainD3D9Path, sizeof(g_config.chainD3D9Path), g_configPath);
         g_config.shadowMaxPrimitiveCount = ReadUInt("Shadows", "maxPrimitiveCount", g_config.shadowMaxPrimitiveCount, 1, 64);
+        g_config.hudEnabled = ReadBool("HUD", "enabled", g_config.hudEnabled);
+        GetPrivateProfileStringA("HUD", "mode", g_config.hudMode, g_config.hudMode, sizeof(g_config.hudMode), g_configPath);
+        g_config.hudX = static_cast<int>(ReadUInt("HUD", "x", static_cast<UINT>(g_config.hudX), 0, 4096));
+        g_config.hudY = static_cast<int>(ReadUInt("HUD", "y", static_cast<UINT>(g_config.hudY), 0, 4096));
+        g_config.hudOpacity = static_cast<BYTE>(ReadUInt("HUD", "opacity", g_config.hudOpacity, 40, 255));
 
         g_config.detailMinPrimitiveCount = ReadUInt("TextureDetail", "minPrimitiveCount", g_config.detailMinPrimitiveCount, 1, 10000);
         g_config.detailAnisotropy = ReadUInt("TextureDetail", "anisotropy", g_config.detailAnisotropy, 1, 16);
@@ -401,6 +411,11 @@ namespace
         IDC_FOG_START,
         IDC_FOG_END,
         IDC_FOG_DENSITY,
+        IDC_HUD_ENABLED,
+        IDC_HUD_CRAWLER,
+        IDC_HUD_IRONMAN,
+        IDC_HUD_X,
+        IDC_HUD_Y,
         IDC_SAVE_RELOAD,
         IDC_RELOAD,
         IDC_CLOSE
@@ -409,16 +424,26 @@ namespace
     HWND g_configWindow = nullptr;
     bool g_configWindowClassRegistered = false;
     bool g_f9WasDown = false;
+    HWND g_gameWindow = nullptr;
+    HWND g_hudWindow = nullptr;
+    bool g_hudWindowClassRegistered = false;
+    bool g_f10WasDown = false;
 
     HRESULT SetConfiguredTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE state, const D3DMATRIX* matrix);
 
     void PumpConfigWindowMessages()
     {
-        if (g_configWindow == nullptr)
+        if (g_configWindow == nullptr && g_hudWindow == nullptr)
             return;
 
         MSG msg {};
-        while (PeekMessageA(&msg, g_configWindow, 0, 0, PM_REMOVE))
+        while (g_configWindow != nullptr && PeekMessageA(&msg, g_configWindow, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+
+        while (g_hudWindow != nullptr && PeekMessageA(&msg, g_hudWindow, 0, 0, PM_REMOVE))
         {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
@@ -453,13 +478,15 @@ namespace
         g_shadowPlaneLogged = false;
         g_surfaceDetailLogged = false;
         LoadConfig();
-        Log("config reloaded: texture=%d water=%d lighting=%d surface=%d fog=%d distance=%d waterStrength=%.2f farPlane=%.1f path=%s",
+        Log("config reloaded: texture=%d water=%d lighting=%d surface=%d fog=%d distance=%d hud=%d/%s waterStrength=%.2f farPlane=%.1f path=%s",
             g_config.textureDetail ? 1 : 0,
             g_config.waterReflection ? 1 : 0,
             g_config.dynamicLighting ? 1 : 0,
             g_config.surfaceDetail ? 1 : 0,
             g_config.volumetricFog ? 1 : 0,
             g_config.extendRenderDistance ? 1 : 0,
+            g_config.hudEnabled ? 1 : 0,
+            g_config.hudMode,
             g_config.waterStrength,
             g_config.farPlane,
             g_configPath);
@@ -478,6 +505,18 @@ namespace
         char text[64] = {};
         std::snprintf(text, sizeof(text), "%.3f", value);
         WritePrivateProfileStringA(section, key, text, g_configPath);
+    }
+
+    void WriteIniInt(const char* section, const char* key, int value)
+    {
+        char text[32] = {};
+        std::snprintf(text, sizeof(text), "%d", value);
+        WritePrivateProfileStringA(section, key, text, g_configPath);
+    }
+
+    void WriteIniString(const char* section, const char* key, const char* value)
+    {
+        WritePrivateProfileStringA(section, key, value, g_configPath);
     }
 
     void SetEditFloat(HWND window, int id, float value)
@@ -525,6 +564,11 @@ namespace
         SetEditFloat(window, IDC_FOG_START, g_config.fogStartScale);
         SetEditFloat(window, IDC_FOG_END, g_config.fogEndScale);
         SetEditFloat(window, IDC_FOG_DENSITY, g_config.fogDensityScale);
+        CheckDlgButton(window, IDC_HUD_ENABLED, g_config.hudEnabled ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_HUD_CRAWLER, _stricmp(g_config.hudMode, "ironman") == 0 ? BST_UNCHECKED : BST_CHECKED);
+        CheckDlgButton(window, IDC_HUD_IRONMAN, _stricmp(g_config.hudMode, "ironman") == 0 ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemInt(window, IDC_HUD_X, static_cast<UINT>(g_config.hudX), FALSE);
+        SetDlgItemInt(window, IDC_HUD_Y, static_cast<UINT>(g_config.hudY), FALSE);
     }
 
     void SaveConfigWindow(HWND window)
@@ -545,10 +589,191 @@ namespace
         WriteIniFloat("Atmosphere", "fogStartScale", GetEditFloat(window, IDC_FOG_START, g_config.fogStartScale));
         WriteIniFloat("Atmosphere", "fogEndScale", GetEditFloat(window, IDC_FOG_END, g_config.fogEndScale));
         WriteIniFloat("Atmosphere", "fogDensityScale", GetEditFloat(window, IDC_FOG_DENSITY, g_config.fogDensityScale));
+        WriteIniBool("HUD", "enabled", IsDlgButtonChecked(window, IDC_HUD_ENABLED) == BST_CHECKED);
+        WriteIniString("HUD", "mode", IsDlgButtonChecked(window, IDC_HUD_IRONMAN) == BST_CHECKED ? "ironman" : "crawler");
+        BOOL hudXOk = FALSE;
+        BOOL hudYOk = FALSE;
+        const UINT hudX = GetDlgItemInt(window, IDC_HUD_X, &hudXOk, FALSE);
+        const UINT hudY = GetDlgItemInt(window, IDC_HUD_Y, &hudYOk, FALSE);
+        if (hudXOk)
+            WriteIniInt("HUD", "x", hudX);
+        if (hudYOk)
+            WriteIniInt("HUD", "y", hudY);
         ReloadConfig();
         FillConfigWindow(window);
     }
 
+
+    const char* GetHudTitle()
+    {
+        return _stricmp(g_config.hudMode, "ironman") == 0 ? "IRONMAN" : "CRAWLER";
+    }
+
+    const char* GetHudSubtitle()
+    {
+        return _stricmp(g_config.hudMode, "ironman") == 0 ? "SELF-FOUND RUN" : "DUNGEON CRAWL";
+    }
+
+    COLORREF GetHudAccent()
+    {
+        return _stricmp(g_config.hudMode, "ironman") == 0 ? RGB(235, 92, 64) : RGB(84, 184, 255);
+    }
+
+    LRESULT CALLBACK HudWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+    {
+        UNREFERENCED_PARAMETER(wparam);
+        UNREFERENCED_PARAMETER(lparam);
+        switch (message)
+        {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps {};
+            HDC dc = BeginPaint(window, &ps);
+            RECT client {};
+            GetClientRect(window, &client);
+
+            HBRUSH bg = CreateSolidBrush(RGB(7, 9, 12));
+            FillRect(dc, &client, bg);
+            DeleteObject(bg);
+
+            RECT strip { 0, 0, 6, client.bottom };
+            HBRUSH accentBrush = CreateSolidBrush(GetHudAccent());
+            FillRect(dc, &strip, accentBrush);
+            DeleteObject(accentBrush);
+
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, GetHudAccent());
+            HFONT titleFont = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+            HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, titleFont));
+            RECT titleRect { 16, 8, client.right - 10, 34 };
+            DrawTextA(dc, GetHudTitle(), -1, &titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            SetTextColor(dc, RGB(225, 229, 234));
+            HFONT subFont = CreateFontA(13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+            SelectObject(dc, subFont);
+            RECT subRect { 17, 34, client.right - 10, 56 };
+            DrawTextA(dc, GetHudSubtitle(), -1, &subRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            SetTextColor(dc, RGB(154, 162, 172));
+            HFONT noteFont = CreateFontA(11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+            SelectObject(dc, noteFont);
+            RECT noteRect { 17, 55, client.right - 10, 76 };
+            DrawTextA(dc, "F10 toggles mode", -1, &noteRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            SelectObject(dc, oldFont);
+            DeleteObject(titleFont);
+            DeleteObject(subFont);
+            DeleteObject(noteFont);
+            EndPaint(window, &ps);
+            return 0;
+        }
+        case WM_DESTROY:
+            g_hudWindow = nullptr;
+            return 0;
+        default:
+            break;
+        }
+        return DefWindowProcA(window, message, wparam, lparam);
+    }
+
+    void EnsureHudWindow()
+    {
+        if (!g_hudWindowClassRegistered)
+        {
+            WNDCLASSA cls {};
+            cls.lpfnWndProc = HudWindowProc;
+            cls.hInstance = g_instance;
+            cls.lpszClassName = "DerethFXHudWindow";
+            cls.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            RegisterClassA(&cls);
+            g_hudWindowClassRegistered = true;
+        }
+
+        if (g_hudWindow == nullptr)
+        {
+            g_hudWindow = CreateWindowExA(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+                "DerethFXHudWindow",
+                "DerethFX HUD",
+                WS_POPUP,
+                0, 0, 190, 78,
+                nullptr,
+                nullptr,
+                g_instance,
+                nullptr);
+        }
+
+        if (g_hudWindow != nullptr)
+            SetLayeredWindowAttributes(g_hudWindow, 0, g_config.hudOpacity, LWA_ALPHA);
+    }
+
+    void HideHudWindow()
+    {
+        if (g_hudWindow != nullptr && IsWindowVisible(g_hudWindow))
+            ShowWindow(g_hudWindow, SW_HIDE);
+    }
+
+    void UpdateHudWindow()
+    {
+        LoadConfig();
+        if (!g_config.hudEnabled)
+        {
+            HideHudWindow();
+            return;
+        }
+
+        EnsureHudWindow();
+        if (g_hudWindow == nullptr)
+            return;
+
+        HWND target = g_gameWindow != nullptr ? g_gameWindow : GetForegroundWindow();
+        RECT rect {};
+        POINT origin {};
+        if (target != nullptr && GetClientRect(target, &rect))
+        {
+            ClientToScreen(target, &origin);
+        }
+        else
+        {
+            origin.x = 0;
+            origin.y = 0;
+        }
+
+        SetWindowPos(g_hudWindow, HWND_TOPMOST, origin.x + g_config.hudX, origin.y + g_config.hudY,
+            190, 78, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        InvalidateRect(g_hudWindow, nullptr, FALSE);
+    }
+
+    void CycleHudMode()
+    {
+        LoadConfig();
+        if (!g_config.hudEnabled)
+        {
+            WriteIniBool("HUD", "enabled", true);
+            WriteIniString("HUD", "mode", "crawler");
+        }
+        else if (_stricmp(g_config.hudMode, "crawler") == 0)
+        {
+            WriteIniString("HUD", "mode", "ironman");
+        }
+        else
+        {
+            WriteIniBool("HUD", "enabled", false);
+        }
+
+        ReloadConfig();
+        if (g_configWindow != nullptr)
+            FillConfigWindow(g_configWindow);
+        UpdateHudWindow();
+    }
     LRESULT CALLBACK ConfigWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
     {
         UNREFERENCED_PARAMETER(lparam);
@@ -580,9 +805,16 @@ namespace
             AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_FOG_END, 320, 212, 80, 22);
             AddLabel(window, "Fog density", 190, 242);
             AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_FOG_DENSITY, 320, 240, 80, 22);
-            AddControl(window, "BUTTON", "Save + Reload", BS_PUSHBUTTON, IDC_SAVE_RELOAD, 16, 280, 120, 28);
-            AddControl(window, "BUTTON", "Reload", BS_PUSHBUTTON, IDC_RELOAD, 150, 280, 90, 28);
-            AddControl(window, "BUTTON", "Close", BS_PUSHBUTTON, IDC_CLOSE, 310, 280, 90, 28);
+            AddControl(window, "BUTTON", "HUD overlay", BS_AUTOCHECKBOX, IDC_HUD_ENABLED, 16, 206, 150, 22);
+            AddControl(window, "BUTTON", "Crawler", BS_AUTORADIOBUTTON, IDC_HUD_CRAWLER, 16, 232, 90, 22);
+            AddControl(window, "BUTTON", "Ironman", BS_AUTORADIOBUTTON, IDC_HUD_IRONMAN, 104, 232, 90, 22);
+            AddLabel(window, "HUD x", 190, 270);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_HUD_X, 320, 268, 80, 22);
+            AddLabel(window, "HUD y", 190, 298);
+            AddControl(window, "EDIT", "", WS_BORDER | ES_AUTOHSCROLL, IDC_HUD_Y, 320, 296, 80, 22);
+            AddControl(window, "BUTTON", "Save + Reload", BS_PUSHBUTTON, IDC_SAVE_RELOAD, 16, 334, 120, 28);
+            AddControl(window, "BUTTON", "Reload", BS_PUSHBUTTON, IDC_RELOAD, 150, 334, 90, 28);
+            AddControl(window, "BUTTON", "Close", BS_PUSHBUTTON, IDC_CLOSE, 310, 334, 90, 28);
             FillConfigWindow(window);
             return 0;
         case WM_COMMAND:
@@ -632,7 +864,7 @@ namespace
         {
             g_configWindow = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "DerethFXConfigWindow", "DerethFX Config",
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                CW_USEDEFAULT, CW_USEDEFAULT, 430, 360, nullptr, nullptr, g_instance, nullptr);
+                CW_USEDEFAULT, CW_USEDEFAULT, 430, 420, nullptr, nullptr, g_instance, nullptr);
         }
 
         FillConfigWindow(g_configWindow);
@@ -659,8 +891,17 @@ namespace
             ToggleConfigWindow();
         }
         g_f9WasDown = f9Down;
+
+        const bool f10Down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+        if (f10Down && !g_f10WasDown)
+        {
+            Log("F10 HUD hotkey pressed");
+            CycleHudMode();
+        }
+        g_f10WasDown = f10Down;
     }
-bool LooksLikeUiDraw(UINT primitiveCount)
+
+    bool LooksLikeUiDraw(UINT primitiveCount)
     {
         const bool fixedFunctionOverlay =
             g_stats.zEnable == FALSE
@@ -1617,6 +1858,7 @@ bool LooksLikeUiDraw(UINT primitiveCount)
     HRESULT WINAPI HookPresent(IDirect3DDevice9* self, const RECT* src, const RECT* dst, HWND hwnd, const RGNDATA* dirty)
     {
         PollConfigHotkey();
+        UpdateHudWindow();
         if (g_config.frameSummaries && (g_stats.frame < 30 || (g_stats.frame % 300) == 0))
         {
             Log("frame=%u begin=%u end=%u clear=%u dp=%u dip=%u dpup=%u dipup=%u worldLike=%u uiLike=%u detail=%u waterCand=%u waterFx=%u lightFx=%u fvf=0x%08lx z=%lu zw=%lu alpha=%lu lighting=%lu",
@@ -2033,6 +2275,7 @@ bool LooksLikeUiDraw(UINT primitiveCount)
 
         HRESULT STDMETHODCALLTYPE CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DDevice9** ppReturnedDeviceInterface) override
         {
+            g_gameWindow = hFocusWindow;
             Log("CreateDevice(adapter=%u, type=%u, hwnd=%p, flags=0x%08lx, windowed=%d, %ux%u)",
                 Adapter,
                 static_cast<unsigned>(DeviceType),
@@ -2072,6 +2315,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     else if (reason == DLL_PROCESS_DETACH)
     {
         ReleaseGeneratedTextures();
+        if (g_hudWindow != nullptr)
+            DestroyWindow(g_hudWindow);
         Log("AC D3D9 proxy unloaded.");
     }
     return TRUE;
