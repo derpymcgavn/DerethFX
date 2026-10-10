@@ -46,10 +46,10 @@ namespace
         int hudY = 92;
         BYTE hudOpacity = 220;
         bool hudShowDetails = true;
-        char hudPerks[192] = "";
-        char hudBonuses[192] = "";
-        char hudProgress[128] = "";
-        char hudPending[128] = "";
+        char hudPerks[512] = "";
+        char hudBonuses[512] = "";
+        char hudProgress[512] = "";
+        char hudPending[512] = "";
         char chainD3D9Path[MAX_PATH] = "reshade_d3d9.dll";
         UINT shadowMaxPrimitiveCount = 2;
         UINT detailMinPrimitiveCount = 4;
@@ -151,7 +151,7 @@ namespace
         DWORD attrs = GetFileAttributesA(g_hudStatusPath);
         if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0)
             return;
-        char current[256] = {};
+        char current[1024] = {};
         strncpy_s(current, output, _TRUNCATE);
         GetPrivateProfileStringA(section, key, current, output, outputSize, g_hudStatusPath);
     }
@@ -694,12 +694,12 @@ namespace
 
     int GetHudWidth()
     {
-        return GetHudDetailLineCount() > 0 ? 330 : 190;
+        return GetHudDetailLineCount() > 0 ? 460 : 190;
     }
 
     int GetHudHeight()
     {
-        return GetHudDetailLineCount() > 0 ? 90 + GetHudDetailLineCount() * 18 : 78;
+        return GetHudDetailLineCount() > 0 ? 286 : 78;
     }
 
     void DrawHudDetailLine(HDC dc, int& y, const char* label, const char* value, COLORREF labelColor)
@@ -707,26 +707,29 @@ namespace
         if (!HasText(value))
             return;
 
-        SetTextColor(dc, labelColor);
-        HFONT labelFont = CreateFontA(11, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        HFONT labelFont = CreateFontA(12, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        HFONT valueFont = CreateFontA(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
             DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
         HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, labelFont));
-        RECT labelRect { 17, y, 82, y + 18 };
-        DrawTextA(dc, label, -1, &labelRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
+        SetTextColor(dc, labelColor);
+        RECT labelRect { 17, y, 100, y + 20 };
+        DrawTextA(dc, label, -1, &labelRect, DT_LEFT | DT_SINGLELINE | DT_TOP);
+
+        SelectObject(dc, valueFont);
         SetTextColor(dc, RGB(225, 229, 234));
+        RECT valueRect { 108, y - 1, GetHudWidth() - 14, y + 84 };
+        RECT measureRect = valueRect;
+        DrawTextA(dc, value, -1, &measureRect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+        DrawTextA(dc, value, -1, &valueRect, DT_LEFT | DT_WORDBREAK | DT_TOP);
+
         SelectObject(dc, oldFont);
         DeleteObject(labelFont);
-        HFONT valueFont = CreateFontA(11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        oldFont = reinterpret_cast<HFONT>(SelectObject(dc, valueFont));
-        RECT valueRect { 86, y, GetHudWidth() - 10, y + 18 };
-        DrawTextA(dc, value, -1, &valueRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        SelectObject(dc, oldFont);
         DeleteObject(valueFont);
-        y += 18;
+        y += std::max(22, static_cast<int>(measureRect.bottom - measureRect.top + 8));
     }
     LRESULT CALLBACK HudWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
     {
@@ -772,10 +775,10 @@ namespace
             int detailY = 56;
             if (GetHudDetailLineCount() > 0)
             {
-                DrawHudDetailLine(dc, detailY, "Perks", g_config.hudPerks, GetHudAccent());
-                DrawHudDetailLine(dc, detailY, "Bonuses", g_config.hudBonuses, RGB(120, 210, 132));
+                DrawHudDetailLine(dc, detailY, "Boons", g_config.hudPerks, GetHudAccent());
+                DrawHudDetailLine(dc, detailY, "Build", g_config.hudBonuses, RGB(120, 210, 132));
                 DrawHudDetailLine(dc, detailY, "Progress", g_config.hudProgress, RGB(240, 196, 90));
-                DrawHudDetailLine(dc, detailY, "Pending", g_config.hudPending, RGB(208, 154, 255));
+                DrawHudDetailLine(dc, detailY, "Next", g_config.hudPending, RGB(208, 154, 255));
             }
 
             SetTextColor(dc, RGB(154, 162, 172));
