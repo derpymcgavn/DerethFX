@@ -86,6 +86,7 @@ namespace
 
     Config g_config;
     bool g_configLoaded = false;
+    DWORD g_lastHudStatusReadTick = 0;
     void InitPaths()
     {
         if (g_logPath[0] != '\0' && g_configPath[0] != '\0' && g_hudStatusPath[0] != '\0')
@@ -154,6 +155,20 @@ namespace
         strncpy_s(current, output, _TRUNCATE);
         GetPrivateProfileStringA(section, key, current, output, outputSize, g_hudStatusPath);
     }
+
+    void RefreshHudStatusConfig()
+    {
+        DWORD now = GetTickCount();
+        if (g_lastHudStatusReadTick != 0 && now - g_lastHudStatusReadTick < 500)
+            return;
+
+        g_lastHudStatusReadTick = now;
+        OverrideStringFromHudStatus("CrawlerHUD", "perks", g_config.hudPerks, sizeof(g_config.hudPerks));
+        OverrideStringFromHudStatus("CrawlerHUD", "bonuses", g_config.hudBonuses, sizeof(g_config.hudBonuses));
+        OverrideStringFromHudStatus("CrawlerHUD", "progress", g_config.hudProgress, sizeof(g_config.hudProgress));
+        OverrideStringFromHudStatus("CrawlerHUD", "pending", g_config.hudPending, sizeof(g_config.hudPending));
+    }
+
     void LoadConfig()
     {
         if (g_configLoaded)
@@ -834,6 +849,7 @@ namespace
         }
 
         EnsureHudWindow();
+        RefreshHudStatusConfig();
         if (g_hudWindow == nullptr)
             return;
 
