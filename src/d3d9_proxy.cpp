@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <algorithm>
 
 namespace
 {
@@ -13,6 +14,7 @@ namespace
     HINSTANCE g_instance = nullptr;
     char g_logPath[MAX_PATH] = {};
     char g_configPath[MAX_PATH] = {};
+    char g_hudStatusPath[MAX_PATH] = {};
 
     enum class LogLevel
     {
@@ -43,6 +45,11 @@ namespace
         int hudX = 18;
         int hudY = 92;
         BYTE hudOpacity = 220;
+        bool hudShowDetails = true;
+        char hudPerks[192] = "";
+        char hudBonuses[192] = "";
+        char hudProgress[128] = "";
+        char hudPending[128] = "";
         char chainD3D9Path[MAX_PATH] = "reshade_d3d9.dll";
         UINT shadowMaxPrimitiveCount = 2;
         UINT detailMinPrimitiveCount = 4;
@@ -81,7 +88,7 @@ namespace
     bool g_configLoaded = false;
     void InitPaths()
     {
-        if (g_logPath[0] != '\0' && g_configPath[0] != '\0')
+        if (g_logPath[0] != '\0' && g_configPath[0] != '\0' && g_hudStatusPath[0] != '\0')
             return;
 
         char basePath[MAX_PATH] = {};
@@ -96,6 +103,8 @@ namespace
         strncat_s(g_logPath, "ac_d3d9_proxy.log", _TRUNCATE);
         strcpy_s(g_configPath, basePath);
         strncat_s(g_configPath, "derethfx.ini", _TRUNCATE);
+        strcpy_s(g_hudStatusPath, basePath);
+        strncat_s(g_hudStatusPath, "derethfx_hud.ini", _TRUNCATE);
     }
 
     bool ReadBool(const char* section, const char* key, bool fallback)
@@ -127,6 +136,24 @@ namespace
         return value;
     }
 
+    void ReadString(const char* section, const char* key, const char* fallback, char* output, DWORD outputSize)
+    {
+        if (output == nullptr || outputSize == 0)
+            return;
+        GetPrivateProfileStringA(section, key, fallback != nullptr ? fallback : "", output, outputSize, g_configPath);
+    }
+
+    void OverrideStringFromHudStatus(const char* section, const char* key, char* output, DWORD outputSize)
+    {
+        if (output == nullptr || outputSize == 0)
+            return;
+        DWORD attrs = GetFileAttributesA(g_hudStatusPath);
+        if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0)
+            return;
+        char current[256] = {};
+        strncpy_s(current, output, _TRUNCATE);
+        GetPrivateProfileStringA(section, key, current, output, outputSize, g_hudStatusPath);
+    }
     void LoadConfig()
     {
         if (g_configLoaded)
@@ -165,6 +192,15 @@ namespace
         g_config.hudX = static_cast<int>(ReadUInt("HUD", "x", static_cast<UINT>(g_config.hudX), 0, 4096));
         g_config.hudY = static_cast<int>(ReadUInt("HUD", "y", static_cast<UINT>(g_config.hudY), 0, 4096));
         g_config.hudOpacity = static_cast<BYTE>(ReadUInt("HUD", "opacity", g_config.hudOpacity, 40, 255));
+        g_config.hudShowDetails = ReadBool("CrawlerHUD", "showDetails", g_config.hudShowDetails);
+        ReadString("CrawlerHUD", "perks", g_config.hudPerks, g_config.hudPerks, sizeof(g_config.hudPerks));
+        ReadString("CrawlerHUD", "bonuses", g_config.hudBonuses, g_config.hudBonuses, sizeof(g_config.hudBonuses));
+        ReadString("CrawlerHUD", "progress", g_config.hudProgress, g_config.hudProgress, sizeof(g_config.hudProgress));
+        ReadString("CrawlerHUD", "pending", g_config.hudPending, g_config.hudPending, sizeof(g_config.hudPending));
+        OverrideStringFromHudStatus("CrawlerHUD", "perks", g_config.hudPerks, sizeof(g_config.hudPerks));
+        OverrideStringFromHudStatus("CrawlerHUD", "bonuses", g_config.hudBonuses, sizeof(g_config.hudBonuses));
+        OverrideStringFromHudStatus("CrawlerHUD", "progress", g_config.hudProgress, sizeof(g_config.hudProgress));
+        OverrideStringFromHudStatus("CrawlerHUD", "pending", g_config.hudPending, sizeof(g_config.hudPending));
 
         g_config.detailMinPrimitiveCount = ReadUInt("TextureDetail", "minPrimitiveCount", g_config.detailMinPrimitiveCount, 1, 10000);
         g_config.detailAnisotropy = ReadUInt("TextureDetail", "anisotropy", g_config.detailAnisotropy, 1, 16);
@@ -619,6 +655,64 @@ namespace
         return _stricmp(g_config.hudMode, "ironman") == 0 ? RGB(235, 92, 64) : RGB(84, 184, 255);
     }
 
+    bool HasText(const char* text)
+    {
+        return text != nullptr && text[0] != '\0';
+    }
+
+    bool IsCrawlerHud()
+    {
+        return _stricmp(g_config.hudMode, "ironman") != 0;
+    }
+
+    int GetHudDetailLineCount()
+    {
+        if (!g_config.hudShowDetails || !IsCrawlerHud())
+            return 0;
+        int lines = 0;
+        if (HasText(g_config.hudPerks)) lines++;
+        if (HasText(g_config.hudBonuses)) lines++;
+        if (HasText(g_config.hudProgress)) lines++;
+        if (HasText(g_config.hudPending)) lines++;
+        return lines;
+    }
+
+    int GetHudWidth()
+    {
+        return GetHudDetailLineCount() > 0 ? 330 : 190;
+    }
+
+    int GetHudHeight()
+    {
+        return GetHudDetailLineCount() > 0 ? 90 + GetHudDetailLineCount() * 18 : 78;
+    }
+
+    void DrawHudDetailLine(HDC dc, int& y, const char* label, const char* value, COLORREF labelColor)
+    {
+        if (!HasText(value))
+            return;
+
+        SetTextColor(dc, labelColor);
+        HFONT labelFont = CreateFontA(11, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, labelFont));
+        RECT labelRect { 17, y, 82, y + 18 };
+        DrawTextA(dc, label, -1, &labelRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+        SetTextColor(dc, RGB(225, 229, 234));
+        SelectObject(dc, oldFont);
+        DeleteObject(labelFont);
+        HFONT valueFont = CreateFontA(11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        oldFont = reinterpret_cast<HFONT>(SelectObject(dc, valueFont));
+        RECT valueRect { 86, y, GetHudWidth() - 10, y + 18 };
+        DrawTextA(dc, value, -1, &valueRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        SelectObject(dc, oldFont);
+        DeleteObject(valueFont);
+        y += 18;
+    }
     LRESULT CALLBACK HudWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
     {
         UNREFERENCED_PARAMETER(wparam);
@@ -660,12 +754,21 @@ namespace
             RECT subRect { 17, 34, client.right - 10, 56 };
             DrawTextA(dc, GetHudSubtitle(), -1, &subRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
+            int detailY = 56;
+            if (GetHudDetailLineCount() > 0)
+            {
+                DrawHudDetailLine(dc, detailY, "Perks", g_config.hudPerks, GetHudAccent());
+                DrawHudDetailLine(dc, detailY, "Bonuses", g_config.hudBonuses, RGB(120, 210, 132));
+                DrawHudDetailLine(dc, detailY, "Progress", g_config.hudProgress, RGB(240, 196, 90));
+                DrawHudDetailLine(dc, detailY, "Pending", g_config.hudPending, RGB(208, 154, 255));
+            }
+
             SetTextColor(dc, RGB(154, 162, 172));
             HFONT noteFont = CreateFontA(11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
             SelectObject(dc, noteFont);
-            RECT noteRect { 17, 55, client.right - 10, 76 };
+            RECT noteRect { 17, GetHudHeight() - 22, client.right - 10, GetHudHeight() - 2 };
             DrawTextA(dc, "F10 toggles mode", -1, &noteRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
             SelectObject(dc, oldFont);
@@ -704,7 +807,7 @@ namespace
                 "DerethFXHudWindow",
                 "DerethFX HUD",
                 WS_POPUP,
-                0, 0, 190, 78,
+                0, 0, GetHudWidth(), GetHudHeight(),
                 nullptr,
                 nullptr,
                 g_instance,
@@ -748,7 +851,7 @@ namespace
         }
 
         SetWindowPos(g_hudWindow, HWND_TOPMOST, origin.x + g_config.hudX, origin.y + g_config.hudY,
-            190, 78, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            GetHudWidth(), GetHudHeight(), SWP_NOACTIVATE | SWP_SHOWWINDOW);
         InvalidateRect(g_hudWindow, nullptr, FALSE);
     }
 

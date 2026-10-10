@@ -73,3 +73,7 @@ The config system is now in place. `derethfx.ini` covers effect toggles, texture
 - Added an optional click-through Win32 HUD overlay for challenge modes.
 - `F10` cycles the HUD through off, crawler, and ironman modes.
 - Added F9 config controls and `[HUD]` INI settings for mode, position, and opacity.
+# 2026-10-10 - Crawler HUD detail feed
+
+- Expanded the Crawler HUD from a mode badge into a status panel when detail lines are present.
+- Added `[CrawlerHUD]` keys for perks, bonuses, progress, and pending choices, plus `derethfx_hud.ini` sidecar override support for live tooling.

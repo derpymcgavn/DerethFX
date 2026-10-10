@@ -85,7 +85,16 @@ mode=crawler
 x=18
 y=92
 opacity=220
+
+[CrawlerHUD]
+showDetails=1
+perks=
+bonuses=
+progress=
+pending=
 ```
+
+For live Crawler details, write the same `[CrawlerHUD]` keys to `derethfx_hud.ini` next to `acclient.exe`. The proxy reloads those lines while the HUD updates, so server tooling or a small companion script can show current boons, bonuses, progression, and pending choices without rewriting the main config.
 ## Build
 
 This project is built with CMake and MSVC as a 32-bit DLL.
